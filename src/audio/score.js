@@ -391,10 +391,15 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
     }
     events.sort((a, b) => a.t - b.t || EVENT_PRIORITY[a.type] - EVENT_PRIORITY[b.type])
 
+    // The linear gain that CC7 will apply for this track. A plugin part has no
+    // CC7 to send, so the same number is applied to its samples instead — that
+    // keeps one `gainDb` meaning across both halves of a hybrid score.
+    const mixGain = Math.pow(10, (gainDb - gainCeiling) / 40)
+
     const end = notes.reduce((max, note) => Math.max(max, note.start + note.duration), 0)
     return {
       name, channel, program, bank: instrument.bank, instrument: instrument.label, source,
-      drums, gainDb, pan, reverb, chorus, notes, events, endSec: end,
+      drums, gainDb, pan, reverb, chorus, mixGain, notes, events, endSec: end,
       ...(vst ? { vst } : {}),
     }
   })

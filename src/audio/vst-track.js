@@ -93,6 +93,12 @@ export async function renderVstStem(track, { sampleRate = 48000, durationSec, ou
     })
     const parsed = parseWav(await readFile(out))
     const channels = fitChannels(parsed.channels, frames)
+    // `gainDb` means the same thing it means for a SoundFont part; a plugin has
+    // no CC7 to carry it, so the equivalent linear gain is applied here.
+    const mixGain = Number.isFinite(track.mixGain) ? track.mixGain : 1
+    if (mixGain !== 1) {
+      for (const channel of channels) for (let i = 0; i < channel.length; i++) channel[i] *= mixGain
+    }
     const peak = peakOf(channels)
     return {
       channels,
@@ -164,17 +170,22 @@ export async function renderMixWithVst(compiled, {
   const rate = sampleRate ?? compiled.sampleRate ?? 48000
   const total = Math.max(0.1, Number.isFinite(durationSec) ? durationSec : compiled.durationSec)
   const frames = Math.ceil(total * rate)
-  const soundfont = await renderCompiled(compiled, {
-    ...soundFontOptions,
-    sampleRate: rate,
-    durationSec: total,
-    normalize: false,
-  })
+  // A score made only of plugin parts has no SoundFont half to render, and
+  // asking `renderCompiled` for one would throw on the empty bank list.
+  const hasFontPart = compiled.tracks.some((track) => !(track.vst && track.vst.plugin))
+  const soundfont = hasFontPart
+    ? await renderCompiled(compiled, {
+      ...soundFontOptions,
+      sampleRate: rate,
+      durationSec: total,
+      normalize: false,
+    })
+    : null
   const channels = emptyPair(frames)
   for (let ch = 0; ch < 2; ch++) {
-    const fromFont = soundfont.channels[ch]
+    const fromFont = soundfont?.channels[ch]
     const fromVst = vst.channels[ch]
-    for (let i = 0; i < frames; i++) channels[ch][i] = (fromFont[i] ?? 0) + (fromVst[i] ?? 0)
+    for (let i = 0; i < frames; i++) channels[ch][i] = (fromFont?.[i] ?? 0) + (fromVst[i] ?? 0)
   }
   const gain = normalize ? normalise(channels, peakDb) : { appliedGain: 1, peakBeforeDb: toDb(peakOf(channels)) }
   return {
@@ -186,9 +197,9 @@ export async function renderMixWithVst(compiled, {
     peakBeforeDb: gain.peakBeforeDb,
     peakDb: toDb(peakOf(channels)),
     rmsDb: toDb(rmsOf(channels)),
-    brokenSamples: (soundfont.brokenSamples ?? 0),
+    brokenSamples: (soundfont?.brokenSamples ?? 0),
     notes: compiled.tracks.reduce((sum, track) => sum + track.notes.length, 0),
-    voices: soundfont.voices ?? 0,
+    voices: soundfont?.voices ?? 0,
     vstParts: vst.parts,
     vstErrors: vst.errors,
   }

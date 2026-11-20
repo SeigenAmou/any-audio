@@ -116,7 +116,9 @@ export const musicToolDefinition = finalizeTool({
       },
     },
     render: textRenderer((args, value) => {
-      const fonts = value.fonts?.length ? value.fonts.map((font) => `${font.id}@+${font.offset} (${font.file})`).join(', ') : basename(value.font ?? '')
+      const fonts = value.fonts?.length
+        ? value.fonts.map((font) => `${font.id}@+${font.offset} (${font.file})`).join(', ')
+        : value.font ? basename(value.font) : 'none (plugin parts only)'
       const lines = [
         `Rendered ${value.durationSec.toFixed(2)}s @ ${value.sampleRate} Hz → ${value.file}`,
         `peak ${value.peakDb.toFixed(1)} dBFS, RMS ${value.rmsDb.toFixed(1)} dBFS`,
@@ -403,6 +405,9 @@ export const musicToolDefinition = finalizeTool({
       await writeFile(target, buffer)
       midiFile = relativeToWorkspace(workspaceRoot, target)
     }
+    if (midiFile && vstParts.length > 0) {
+      warnings.push(`the .mid carries the notes of ${vstParts.map((track) => `"${track.name}"`).join(', ')} but not which plugin they used — MIDI has no plugin field, so pick a sound for those parts in the DAW`)
+    }
 
     return {
       ok: true,
@@ -415,7 +420,9 @@ export const musicToolDefinition = finalizeTool({
       sampleRate,
       peakDb: Number(rendered.peakDb.toFixed(2)),
       rmsDb: Number(rendered.rmsDb.toFixed(2)),
-      font: plan.banks[0]?.path,
+      // A pure-plugin score loads no SoundFont; an undefined `font` would fail
+      // the output schema instead of saying "there is none".
+      ...(plan.banks[0]?.path ? { font: plan.banks[0].path } : {}),
       fonts: plan.fonts,
       tracks,
       stems,

@@ -208,7 +208,7 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 {"name":"synth","vst":"C:/Program Files/Roland Cloud/JUNO-106/JUNO-106(VST3 64bit).vst3","notes":[[0,4,"C3",100]]}
 ```
 
-`vst` 可以只写插件路径，也可以写成 `{"plugin":"…","params":{"filter_cutoff":40},"controls":[[1.5,74,90]]}`（`params` 用插件自己的原始范围，`controls` 是 `[秒, CC 号, 值]`，也可以直接用 score 的 `automation` 写）。插件声部**不占 MIDI 通道**，能和 SoundFont 声部混在同一首里：渲染时插件在自己的进程里出声，回来与 SoundFont 那半边相加，最后只做**一次**母带归一化——两边的高低关系就是谱面写的关系，不会因为各自归一化而被打乱。每个声部仍会单独渲染一次用来测电平，`stems:true` 时也照样拿到插件声部自己的 stem。
+`vst` 可以只写插件路径，也可以写成 `{"plugin":"…","params":{"filter_cutoff":40},"controls":[[1.5,74,90]]}`（`params` 用插件自己的原始范围，`controls` 是 `[秒, CC 号, 值]`，也可以直接用 score 的 `automation` 写）。插件声部**不占 MIDI 通道**，能和 SoundFont 声部混在同一首里：渲染时插件在自己的进程里出声，回来与 SoundFont 那半边相加，最后只做**一次**母带归一化——两边的高低关系就是谱面写的关系，不会因为各自归一化而被打乱。`gainDb` 在两种声部上是同一个意思：SoundFont 声部拿它算 CC7，插件声部把等量的线性增益直接乘到样本上。每个声部仍会单独渲染一次用来测电平，`stems:true` 时也照样拿到插件声部自己的 stem。
 
 某个插件没渲染出来不会带走整首：其余部分照常混音，回执的 `warnings` 里写明哪个声部、哪个插件、为什么。`TIMEOUT` 是结论，换插件，别重试。
 

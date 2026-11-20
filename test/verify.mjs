@@ -1287,6 +1287,43 @@ await test('anyaudio_music can hand the arrangement back as a .mid', async () =>
   near(parsed.durationSec, 2, 0.05, 'the arrangement keeps the render length')
 })
 
+await test('anyaudio_music plays a plugin part alongside SoundFont parts', async () => {
+  const vst = tools.get('anyaudio_vst')
+  const scanned = await vst.execute({ action: 'scan', limit: 200 }, exec)
+  if (!scanned.available || scanned.count === 0) {
+    console.log('     (no pedalboard, or no VST3 installed — the plugin half is skipped)')
+    return
+  }
+  // Only a plugin that was measured to render headless: the others are a fact
+  // about this machine, not a broken mix path.
+  const target = scanned.plugins.find((entry) => /JUNO|JUPITER|SH-101|TB-303|SYSTEM/i.test(entry.name))
+  if (!target) {
+    console.log('     (no measured-working plugin installed — the plugin half is skipped)')
+    return
+  }
+  const music = tools.get('anyaudio_music')
+  const result = await music.execute({
+    projectId: await freshAttach(),
+    score: {
+      title: 'hybrid',
+      tracks: [
+        { name: 'keys', instrument: 'piano', notes: [[0, 1, 'C4', 90]] },
+        { name: 'synth', vst: target.path, notes: [[0, 1, 'C3', 100]] },
+      ],
+    },
+    durationSec: 2,
+    tailSec: 0,
+    peakDb: -3,
+  }, exec)
+  assertMatchesOutputSchema(music, result)
+  assert(result.ok === true, 'the hybrid score renders')
+  const synth = result.tracks.find((track) => track.name === 'synth')
+  assert(synth && /^vst:/.test(synth.instrument), `the plugin part is named as a plugin, got ${synth?.instrument}`)
+  // One normalisation for the whole mix: the SoundFont half and the plugin half
+  // share the master gain instead of each being levelled on its own.
+  assert(result.peakDb <= -2.5 && result.peakDb >= -3.5, `the master lands near -3 dBFS, got ${result.peakDb}`)
+})
+
 await test('anyaudio_style measures a score and keeps the card on the shelf', async () => {
   const styleDir = join(tmpDir, 'styles')
   const previous = process.env.ANYAUDIO_STYLE_DIR
@@ -1393,6 +1430,16 @@ await test('a score can hand one part to a plugin without stealing a SoundFont c
     tracks: [{ name: 'y', vst: { plugin: 'C:/a.vst3', params: { cutoff: 40 } }, notes: [[0, 1, 60, 90]] }],
   })
   assert(long.tracks[0].vst.params.cutoff === 40, 'the long form keeps its parameters')
+
+  // A score made only of plugin parts must not demand a SoundFont: the point of
+  // the plugin path is that it works on a machine with no font installed.
+  const { planFonts } = await import('../src/audio/banks.js')
+  const onlyPlugins = compileScore({
+    tracks: [{ name: 'x', vst: 'C:/a.vst3', notes: [[0, 1, 60, 90]] }],
+  }, { sampleRate: 48000 })
+  const planned = await planFonts(onlyPlugins, {})
+  assert(planned.banks.length === 0, 'a pure-plugin score loads no SoundFont bank')
+  assert(planned.fonts.length === 0, 'a pure-plugin score reports no fonts')
 })
 
 await test('anyaudio_record lists inputs and captures whatever the cable carries', async () => {

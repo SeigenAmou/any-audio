@@ -1,3 +1,4 @@
+import { basename } from 'node:path'
 import { programName } from './midi-file.js'
 
 /**
@@ -184,7 +185,9 @@ function partFacts(track, notes) {
   const span = track.endSec ? Math.max(track.endSec, 0.1) : Math.max(...notes.map((note) => note.start + note.duration), 0.1)
   return {
     name: track.name,
-    instrument: track.drums ? 'drums' : (track.instrument || programName(track.program ?? 0)),
+    instrument: track.vst
+      ? `vst: ${basename(track.vst.plugin)}`
+      : track.drums ? 'drums' : (track.instrument || programName(track.program ?? 0)),
     program: track.drums ? 0 : (track.program ?? 0),
     drums: Boolean(track.drums),
     notes: notes.length,
