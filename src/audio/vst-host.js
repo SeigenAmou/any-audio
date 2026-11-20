@@ -231,6 +231,29 @@ export async function describeVst(plugin, options = {}) {
   return { path: plugin, instrument: Boolean(reply.instrument), parameters: reply.parameters ?? [] }
 }
 
+/** Render several parts through one worker process. The worker keeps one loaded
+ *  plugin per path, so three parts of the same synth pay its load cost once
+ *  instead of three times. A reply that is not ok belongs to its own index; a
+ *  failure of the process itself rejects the whole call, leaving the caller to
+ *  decide which parts that takes down. */
+export async function renderVstBatch(requests, { timeoutMs } = {}) {
+  if (!Array.isArray(requests) || requests.length === 0) return []
+  const batch = requests.map((request) => ({
+    op: 'render',
+    plugin: request.plugin,
+    notes: request.notes,
+    durationSec: Number.isFinite(Number(request.durationSec)) ? Number(request.durationSec) : undefined,
+    sampleRate: request.sampleRate,
+    params: request.params && typeof request.params === 'object' ? request.params : undefined,
+    controls: Array.isArray(request.controls) ? request.controls : undefined,
+    out: request.out,
+  }))
+  // The budget grows with the number of parts but stops at ten minutes: a batch
+  // is still one deadline, and a wedged loader must not sit there forever.
+  const budget = timeoutMs ?? Math.min(RENDER_TIMEOUT_MS * requests.length, 600000)
+  return runVstWorker(batch, { timeoutMs: budget })
+}
+
 /** Render notes through one plugin and write a WAV. `notes` is
  *  [[startSec, durationSec, midi, velocity], …] — the same shape as a score. */
 export async function renderVst({ plugin, notes, controls, params, durationSec, sampleRate = 48000, out, timeoutMs }) {
