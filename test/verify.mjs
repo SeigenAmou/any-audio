@@ -1324,6 +1324,38 @@ await test('anyaudio_music plays a plugin part alongside SoundFont parts', async
   assert(result.peakDb <= -2.5 && result.peakDb >= -3.5, `the master lands near -3 dBFS, got ${result.peakDb}`)
 })
 
+await test('a plugin part gets a stem of its own when the score asks for stems', async () => {
+  const vst = tools.get('anyaudio_vst')
+  const scanned = await vst.execute({ action: 'scan', limit: 200 }, exec)
+  if (!scanned.available || scanned.count === 0) {
+    console.log('     (no pedalboard, or no VST3 installed — the stem check is skipped)')
+    return
+  }
+  const target = scanned.plugins.find((entry) => /JUNO|JUPITER|SH-101|TB-303|SYSTEM/i.test(entry.name))
+  if (!target) {
+    console.log('     (no measured-working plugin installed — the stem check is skipped)')
+    return
+  }
+  const music = tools.get('anyaudio_music')
+  const result = await music.execute({
+    projectId: await freshAttach(),
+    score: {
+      title: 'stems',
+      tracks: [
+        { name: 'keys', instrument: 'piano', notes: [[0, 1, 'C4', 90]] },
+        { name: 'synth', vst: target.path, notes: [[0, 1, 'C3', 100]] },
+      ],
+    },
+    stems: true,
+    durationSec: 1.5,
+    tailSec: 0,
+  }, exec)
+  assertMatchesOutputSchema(music, result)
+  assert(result.stems.length === 2, `both parts got a stem file, got ${result.stems.length}`)
+  const named = (result.attached ?? []).map((entry) => entry.trackName)
+  assert(named.includes('synth'), `the plugin part has its own track, got ${named.join(', ')}`)
+})
+
 await test('anyaudio_style measures a score and keeps the card on the shelf', async () => {
   const styleDir = join(tmpDir, 'styles')
   const previous = process.env.ANYAUDIO_STYLE_DIR

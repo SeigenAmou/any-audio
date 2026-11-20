@@ -64,6 +64,7 @@ export const musicToolDefinition = finalizeTool({
     'The rendered music goes into a clip bay project: pass projectId, and it is added as material and placed on its own track (one track per score track when stems:true), so the person can open, hear and adjust it. ' +
     'Call it whenever you are making or editing a video that should have a soundtrack, and prefer it over hand-writing numpy synthesis: acoustic timbres, several instruments, humanised timing. ' +
     'Each track may name a "source" (font id from anyaudio_sources, a .sf2 path, or "auto" to pick the best-scored installed font for that instrument). ' +
+    'A track may instead hand its part to an installed VST3 plugin: write vst:"<plugin path>" (or vst:{plugin, params, controls}) instead of instrument, and that part renders in its own plugin process and is summed onto the SoundFont mix before the single master gain — both halves share gainDb and one normalisation. A score may be all plugins; it then needs no SoundFont at all. ' +
     'Different tracks in one score may use different fonts; they are loaded into one synth and kept on non-overlapping bank offsets. ' +
     'Drum kits always come from the default font (the first loaded bank) — pass another kit as "font" if you need it. ' +
     'Score format (seconds on the video timeline): {title, tracks:[{name, instrument, source, gainDb, pan, reverb, drums, humanize:{timingMs,velocity}, notes:[[startSec, durSec, pitch|pitches, velocity]]}], automation:[{track, controller, points:[[sec,value]]}]}. ' +
@@ -146,7 +147,11 @@ export const musicToolDefinition = finalizeTool({
     const workspaceRoot = await workspaceRootOf(exec)
     const projectId = requireProjectId(args, 'anyaudio_music')
     const { config } = await readConfig()
-    const score = await readJsonParam(args.score, 'score', { workspaceRoot })
+    const rawScore = await readJsonParam(args.score, 'score', { workspaceRoot })
+    // A track may point at a saved patch instead of repeating a plugin path and
+    // two hundred parameter values. Resolution is async, so it happens here and
+    // not inside compileScore.
+    const score = await resolveScorePresets(rawScore)
     const sampleRate = Math.round(clampSeconds(args.sampleRate ?? config.music.sampleRate, config.music.sampleRate)) || config.music.sampleRate
     const compiled = compileScore(score, { sampleRate })
     const tailSec = clampSeconds(args.tailSec ?? config.music.tailSec, config.music.tailSec)

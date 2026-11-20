@@ -103,7 +103,7 @@ export const vstToolDefinition = finalizeTool({
     'Use it when the person asks for a specific plugin sound (a Roland Cloud synth, a piano library, a drum machine) or when a SoundFont cannot get close. ' +
     'action "scan" lists the plugins installed on this machine; action "info" dumps one plugin\'s parameters; action "render" plays notes. ' +
     'Notes are [startSec, durSec, midi, velocity, channel?]; channel defaults to 0. ' +
-    'Unlike a SoundFont render this is one plugin at a time — start a project with anyaudio_project, then place each part with its own call. ' +
+    'Unlike a SoundFont render this is one plugin at a time. For a part inside a multi-instrument arrangement, do not render it separately and paste it: write vst:"<plugin path>" on a track of anyaudio_music instead, and it is mixed into the score with one shared master gain. Use this tool to audition a patch, or when the plugin part is the whole piece. ' +
     'SoundFonts are still the right default for a full arrangement: they load in-process, need no licence and render the whole score at once. ' +
     'A plugin that waits for a licence window cannot be driven headless; those report a timeout instead of hanging the host.',
   parameters: {
