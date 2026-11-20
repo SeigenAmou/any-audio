@@ -1,12 +1,13 @@
-import { basename, join } from 'node:path'
-import { rm } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { planFonts, resolveConfiguredDefault } from '../audio/banks.js'
 import { compileScore } from '../audio/score.js'
+import { encodeMidiFile } from '../audio/midi-file.js'
 import { renderScore } from '../audio/renderers.js'
 import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
-import { deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace, requireProjectId, scratchPath, seconds as clampSeconds, textRenderer, workspaceRootOf, writeWavFile } from './shared.js'
+import { deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace, requireProjectId, resolveOutputPath, scratchPath, seconds as clampSeconds, textRenderer, workspaceRootOf, writeWavFile } from './shared.js'
 
 function describeTracks(tracks) {
   return tracks
@@ -84,6 +85,8 @@ export const musicToolDefinition = finalizeTool({
       stems: { type: 'boolean', description: 'Also write one WAV per track next to the mix, when stems:true each track gets its own file and trackName is ignored. Stems keep the master\'s relative levels (they are not peak-normalised), so they can be inspected or re-balanced later.' },
       analyze: { type: 'boolean', description: 'Include more per-track detail in the reply (the balance warning and the silence check). Per-track levels are measured on every call and no longer depend on this flag; use it only when you want the detail listed. Measuring costs one extra synthesis per track — measured on a 12-track 64 s score at 48 kHz: mixed render 2.7 s, the twelve per-track passes 13.4 s, so the call takes about 16 s instead of 3 s. That price is paid on every call, so do not call this tool again just to see the balance.' },
       replace: { type: 'boolean', description: 'Replace instead of append. When this music is a second pass at a score the project already holds (you rebalanced the parts and are rendering again), pass true: the track family named after this score is cleared first, so the project keeps one set of stems rather than gaining a second. Without it a re-render appends, which is how a project ends up with "钟琴旋律" and "钟琴旋律 2" side by side.' },
+      midi: { oneOf: [{ type: 'boolean' }, { type: 'string' }], description: 'Also write the arrangement as a standard MIDI file: true writes .anyaudio/out/score-<stamp>.mid, or pass a path. Use it when the person wants to edit the parts in a DAW, swap a timbre, or finish the performance by hand. The .mid is an arrangement, not audio — it is not added to the project and the mixer never plays it.' },
+      midiBpm: { type: 'number', description: 'The tempo written into the exported .mid, default 120. The score clock is in seconds, so the tempo only decides how many ticks a second is worth; it does not change what is heard.' },
     },
     required: ['score', 'projectId'],
   },
@@ -107,6 +110,7 @@ export const musicToolDefinition = finalizeTool({
         fonts: { type: 'array', items: { type: 'object', additionalProperties: true } },
         tracks: { type: 'array', items: { type: 'object', additionalProperties: true } },
         stems: { type: 'array', items: { type: 'string' } },
+        midi: { type: 'string' },
         warnings: { type: 'array', items: { type: 'string' } },
       },
     },
@@ -126,6 +130,7 @@ export const musicToolDefinition = finalizeTool({
         ? `In project ${value.projectId}: ${placed.map((entry) => `${entry.clipId} "${entry.trackName}" @ ${Number(entry.startSec).toFixed(2)}s`).join(', ')}`
         : `In project ${value.projectId}.`)
       if (value.delivered) lines.push(`Delivered copy: ${value.delivered}`)
+      if (value.midi) lines.push(`Arrangement: ${value.midi} — a .mid to keep editing elsewhere; it is not audio and not part of the project.`)
       // The point of I-35 is that this sentence exists on every reply. An Agent
       // that does not know the levels are already here calls the tool again to
       // find out, which is the whole "render four times" loop.
@@ -356,9 +361,28 @@ export const musicToolDefinition = finalizeTool({
       }
     }
 
+    // The arrangement, in the one file format another program can open. It costs
+    // nothing extra to write (the score is already compiled) and it is the thing
+    // a person keeps: a rendered WAV bakes the timbre, a .mid does not.
+    let midiFile = null
+    if (args.midi) {
+      const buffer = encodeMidiFile(compiled, {
+        bpm: Number.isFinite(Number(args.midiBpm)) ? Number(args.midiBpm) : 120,
+      })
+      const target = resolveOutputPath({
+        workspaceRoot,
+        requested: typeof args.midi === 'string' ? args.midi : undefined,
+        defaultName: `score-${nowStamp()}.mid`,
+      })
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, buffer)
+      midiFile = relativeToWorkspace(workspaceRoot, target)
+    }
+
     return {
       ok: true,
       projectId,
+      ...(midiFile ? { midi: midiFile } : {}),
       ...(primary ? { file: relativeToWorkspace(workspaceRoot, primary), absolutePath: primary } : {}),
       ...(delivered ? { delivered: relativeToWorkspace(workspaceRoot, delivered), deliveredAbsolutePath: delivered } : {}),
       bytes: written.bytes,

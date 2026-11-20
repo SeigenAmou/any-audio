@@ -1272,6 +1272,21 @@ await test('anyaudio_midi exports, imports and analyzes a real file', async () =
   }
 })
 
+await test('anyaudio_music can hand the arrangement back as a .mid', async () => {
+  const { parseMidiFile } = await import('../src/audio/midi-file.js')
+  const result = await tools.get('anyaudio_music').execute({
+    projectId: await freshAttach(),
+    score: { title: 'midi-from-render', tracks: [{ name: 'lead', instrument: 'flute', notes: [[0, 1, 'A4'], [1, 1, 'C5']] }] },
+    durationSec: 2,
+    midi: true,
+  }, exec)
+  assert(typeof result.midi === 'string', 'the reply names the .mid it wrote')
+  const parsed = parseMidiFile(await readFile(join(repoRoot, result.midi)))
+  const notes = parsed.tracks.reduce((sum, track) => sum + track.notes.length, 0)
+  assert(notes === 2, `both notes are in the exported file, got ${notes}`)
+  near(parsed.durationSec, 2, 0.05, 'the arrangement keeps the render length')
+})
+
 if (!hadAnyAudioDir) {
   const leftover = await readdir(anyaudioDir).catch(() => [])
   if (leftover.length === 0) await rm(anyaudioDir, { recursive: true, force: true })
