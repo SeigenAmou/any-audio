@@ -4,7 +4,8 @@ import { planFonts, resolveConfiguredDefault } from '../audio/banks.js'
 import { compileScore } from '../audio/score.js'
 import { encodeMidiFile } from '../audio/midi-file.js'
 import { renderScore } from '../audio/renderers.js'
-import { renderMixWithVst, renderVstStem, vstTracksOf } from '../audio/vst-track.js'
+import { renderMixWithParts, renderVstStem, vstTracksOf } from '../audio/vst-track.js'
+import { hwTracksOf, renderHwStem } from '../audio/hw-track.js'
 import { resolveScorePresets } from '../audio/vst-preset.js'
 import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
@@ -190,8 +191,9 @@ export const musicToolDefinition = finalizeTool({
     let vstScratch = 0
     const makeVstScratch = () => scratchPath(workspaceRoot, `vst-${nowStamp()}-${vstScratch++}.wav`)
     const vstParts = vstTracksOf(compiled)
-    const rendered = vstParts.length > 0
-      ? await renderMixWithVst(compiled, {
+    const hwParts = hwTracksOf(compiled)
+    const rendered = (vstParts.length > 0 || hwParts.length > 0)
+      ? await renderMixWithParts(compiled, {
         soundFontOptions: { banks: plan.banks, layout: plan.layout },
         sampleRate,
         durationSec,
@@ -258,9 +260,11 @@ export const musicToolDefinition = finalizeTool({
       gain,
       renderOne: (track) => track.vst
         ? renderVstStem(track, { sampleRate, durationSec, out: makeVstScratch() })
-        : renderScore(compiled, {
-          banks: plan.banks, layout: plan.layout, sampleRate, durationSec, normalize: false, onlyTrack: track.name,
-        }),
+        : track.hw
+          ? renderHwStem(track, { sampleRate, durationSec, out: makeVstScratch() })
+          : renderScore(compiled, {
+            banks: plan.banks, layout: plan.layout, sampleRate, durationSec, normalize: false, onlyTrack: track.name,
+          }),
       onStem: args.stems === true
         ? async (track, channels, level) => {
           // `\w` is ASCII-only, so every Chinese track name collapsed to the same
@@ -340,7 +344,9 @@ export const musicToolDefinition = finalizeTool({
         // A plugin part has no SoundFont instrument; naming the plugin is the
         // only description that is true, and `piano` would send a person
         // looking at the wrong thing.
-        instrument: track.vst ? `vst: ${basename(track.vst.plugin)}` : track.instrument,
+        instrument: track.vst
+          ? `vst: ${basename(track.vst.plugin)}`
+          : track.hw ? `hw: ${track.hw.port}` : track.instrument,
         program: assignment?.program ?? track.program,
         source: assignment?.source,
         gainDb: track.gainDb,
@@ -358,6 +364,12 @@ export const musicToolDefinition = finalizeTool({
     if (defaultNote) warnings.push(defaultNote)
     for (const failure of rendered.vstErrors ?? []) {
       warnings.push(`the plugin part "${failure.name}" (${basename(failure.plugin)}) did not render — ${failure.message}. The rest of the score was mixed without it.`)
+    }
+    for (const failure of rendered.hwErrors ?? []) {
+      warnings.push(`the hardware part "${failure.name}" on "${failure.port}" did not record — ${failure.message}. The rest of the score was mixed without it.`)
+    }
+    for (const part of rendered.hwParts ?? []) {
+      for (const warning of part.warnings ?? []) warnings.push(`"${part.name}" (${part.port}): ${warning}`)
     }
     if (args.durationSec !== undefined && compiled.durationSec > durationSec + 0.001) {
       warnings.push(`score runs to ${compiled.durationSec.toFixed(2)}s but durationSec is ${durationSec.toFixed(2)}s — notes past the end are cut; add tail or end the music earlier`)
@@ -413,6 +425,9 @@ export const musicToolDefinition = finalizeTool({
     }
     if (midiFile && vstParts.length > 0) {
       warnings.push(`the .mid carries the notes of ${vstParts.map((track) => `"${track.name}"`).join(', ')} but not which plugin they used — MIDI has no plugin field, so pick a sound for those parts in the DAW`)
+    }
+    if (midiFile && hwParts.length > 0) {
+      warnings.push(`the .mid carries the notes of ${hwParts.map((track) => `"${track.name}"`).join(', ')} but not which port or channel played them — a DAW will need that set by hand`)
     }
 
     return {

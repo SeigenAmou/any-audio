@@ -239,6 +239,27 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 **顺序**：`anyaudio_record devices` 找到输入 → `anyaudio_midiout ports` 找到端口 → `calibrate` 测一次 → 之后每次 `play` 都带 `trimLatencyMs`。要留在工程里就带 `projectId`，录制结果作为一条普通音频素材（`snapshotKind: "hardware-capture"`）进轨道，之后的混音、duck、导出与别的素材完全一样。
 
+### 让硬件音源直接进乐谱
+
+音源和插件一样可以当一个声部写进 score，`anyaudio_music` 会把它弹一遍并录回来，与其它轨道一起混：
+
+```json
+{"tracks": [
+  {"name": "pad", "instrument": "warm-pad", "notes": [[0, 8, "C3", 70]]},
+  {"name": "lead", "hw": "SD-20 PART A",
+   "captureDevice": "3- USB Audio Device", "latencyMs": 66,
+   "program": 81, "notes": [[0, 1, "G4", 100], [2, 1, "A4", 96]]}
+]}
+```
+
+- 短形式 `hw` 只写端口名；长形式还可给 `channel`（0–15，这个端口自己的通道号）、`program`（音色号）、`captureDevice`、`latencyMs`。
+- `captureDevice` 不写就找环境变量 `ANYAUDIO_CAPTURE_DEVICE`；两者都没有会直接报错——因为「弹了但没录」会得到一条静音，比报错更难查。
+- `latencyMs` 不写就找 `ANYAUDIO_MIDI_LATENCY_MS`，再没有就是 0，并给一条「跑 calibrate」的警告。
+- 一个声部只能有一个音源：写了 `hw` 又写 `vst` 会被拒绝。
+- 硬件声部不占 SoundFont 的通道，也不会生成 bank/program 事件；全是硬件声部的谱子不需要装任何音色库。
+- **实时代价**：插件和 SoundFont 是离线渲染（比实时快），硬件声部必须按谱面等它响完再录，所以一首 3 分钟、带硬件声部的曲子至少要多花 3 分钟，而且一次只能录一个硬件声部（多个硬件声部是顺序录的）。
+- 设备不在线时的表现：端口找不到会报出候选列表；音源没开或 ASIO 独占时会录到静音并给出 `silent` 警告。
+
 ## 与画面对齐
 
 - 音乐段落切换对齐分镜切换点，不要在小节中间硬切。

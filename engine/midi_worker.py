@@ -226,6 +226,25 @@ def do_play(rtmidi, request):
         raise ValueError("play needs notes: [[startSec, durSec, midi, velocity, channel?], …]")
     channel = int(request.get("channel") or 0)
     messages = midi_messages(notes, channel)
+    # Controller moves belong on the same timeline as the notes: bank select and
+    # volume are how a module ends up on the right patch. A CC that shares a
+    # timestamp with a note-on goes first, so the note is already on the new
+    # patch when it sounds.
+    controls = request.get("controls") or []
+    for entry in controls:
+        if not entry or len(entry) < 3:
+            continue
+        cc_channel = int(entry[3]) & 0x0F if len(entry) > 3 else channel
+        messages.append((float(entry[0]), [0xB0 | cc_channel, int(entry[1]) & 0x7F, int(entry[2]) & 0x7F]))
+    if controls:
+        def order(item):
+            status = item[1][0] & 0xF0
+            if status == 0xB0:
+                return (item[0], 0)
+            if status == 0x80:
+                return (item[0], 1)
+            return (item[0], 2)
+        messages.sort(key=order)
     port = request.get("port")
     capture_request = request.get("capture")
     last_end = max((when for when, _ in messages), default=0)

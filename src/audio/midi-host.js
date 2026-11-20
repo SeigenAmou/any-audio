@@ -115,10 +115,10 @@ export async function listMidiPorts() {
 
 /** Send notes to a port on a timeline. Resolves when the last note-off left.
  *  With `capture` the worker records the line input on the same clock. */
-export async function playMidi({ port, notes, channel, program, capture, durationSec, timeoutMs }) {
+export async function playMidi({ port, notes, channel, program, controls, capture, durationSec, timeoutMs }) {
   const lastEnd = (notes ?? []).reduce((end, note) => Math.max(end, Number(note?.[0] ?? 0) + Number(note?.[1] ?? 0)), 0)
   const budget = timeoutMs ?? Math.round(Math.max(durationSec ?? lastEnd, lastEnd) * 1000) + 30000
-  const [reply] = await runMidiWorker([{ op: 'play', port, notes, channel, program, capture }], { timeoutMs: budget })
+  const [reply] = await runMidiWorker([{ op: 'play', port, notes, channel, program, controls, capture }], { timeoutMs: budget })
   if (!reply?.ok) {
     throw new MidiHostError(reply?.error ?? 'the notes could not be sent', { code: reply?.code ?? 'PLAY_FAILED' })
   }

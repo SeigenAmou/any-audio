@@ -15,6 +15,7 @@ import { readFile, rm } from 'node:fs/promises'
 import { peakOf, parseWav, rmsOf, toDb } from './wav.js'
 import { renderCompiled } from './synth.js'
 import { renderVst } from './vst-host.js'
+import { renderHwTracks } from './hw-track.js'
 
 /** A VST part is rendered one plugin process at a time; 20k notes is already
  *  far past what a single part should carry, and the limit turns a runaway
@@ -151,12 +152,16 @@ function normalise(channels, peakDb) {
 }
 
 /**
- * Render a score that mixes SoundFont parts and VST parts, and return the same
- * shape as `renderCompiled`. The SoundFont half is rendered without
- * normalisation, the two halves are summed, and only then is the master gain
- * applied — see the header note on why.
+ * Render a score that mixes SoundFont parts with parts that sound elsewhere
+ * (a plugin process, a hardware module), and return the same shape as
+ * `renderCompiled`. The SoundFont half is rendered without normalisation, every
+ * outside half is summed on top, and only then is the master gain applied — see
+ * the header note on why.
+ *
+ * Hardware parts are rendered last and one at a time: they are the only ones
+ * that take real time, and the caller may want to say so between them.
  */
-export async function renderMixWithVst(compiled, {
+export async function renderMixWithParts(compiled, {
   soundFontOptions = {},
   sampleRate,
   durationSec,
@@ -164,15 +169,16 @@ export async function renderMixWithVst(compiled, {
   normalize = true,
   makeScratch,
   timeoutMs,
+  onHwPart,
 } = {}) {
-  const vst = await renderVstTracks(compiled, { sampleRate, durationSec, makeScratch, timeoutMs })
-  if (!vst) throw new Error('renderMixWithVst was called on a score with no VST parts')
   const rate = sampleRate ?? compiled.sampleRate ?? 48000
   const total = Math.max(0.1, Number.isFinite(durationSec) ? durationSec : compiled.durationSec)
   const frames = Math.ceil(total * rate)
-  // A score made only of plugin parts has no SoundFont half to render, and
+  const vst = await renderVstTracks(compiled, { sampleRate: rate, durationSec: total, makeScratch, timeoutMs })
+  const hw = await renderHwTracks(compiled, { sampleRate: rate, durationSec: total, makeScratch, timeoutMs, onPart: onHwPart })
+  // A score made only of outside parts has no SoundFont half to render, and
   // asking `renderCompiled` for one would throw on the empty bank list.
-  const hasFontPart = compiled.tracks.some((track) => !(track.vst && track.vst.plugin))
+  const hasFontPart = compiled.tracks.some((track) => !(track.vst && track.vst.plugin) && !track.hw)
   const soundfont = hasFontPart
     ? await renderCompiled(compiled, {
       ...soundFontOptions,
@@ -184,8 +190,11 @@ export async function renderMixWithVst(compiled, {
   const channels = emptyPair(frames)
   for (let ch = 0; ch < 2; ch++) {
     const fromFont = soundfont?.channels[ch]
-    const fromVst = vst.channels[ch]
-    for (let i = 0; i < frames; i++) channels[ch][i] = (fromFont?.[i] ?? 0) + (fromVst[i] ?? 0)
+    const fromVst = vst?.channels[ch]
+    const fromHw = hw?.channels[ch]
+    for (let i = 0; i < frames; i++) {
+      channels[ch][i] = (fromFont?.[i] ?? 0) + (fromVst?.[i] ?? 0) + (fromHw?.[i] ?? 0)
+    }
   }
   const gain = normalize ? normalise(channels, peakDb) : { appliedGain: 1, peakBeforeDb: toDb(peakOf(channels)) }
   return {
@@ -200,7 +209,17 @@ export async function renderMixWithVst(compiled, {
     brokenSamples: (soundfont?.brokenSamples ?? 0),
     notes: compiled.tracks.reduce((sum, track) => sum + track.notes.length, 0),
     voices: soundfont?.voices ?? 0,
-    vstParts: vst.parts,
-    vstErrors: vst.errors,
+    vstParts: vst?.parts ?? [],
+    vstErrors: vst?.errors ?? [],
+    hwParts: hw?.parts ?? [],
+    hwErrors: hw?.errors ?? [],
   }
+}
+
+/** Kept for callers that only know about plugins; it is the same render. */
+export async function renderMixWithVst(compiled, options = {}) {
+  if (vstTracksOf(compiled).length === 0) {
+    throw new Error('renderMixWithVst was called on a score with no VST parts')
+  }
+  return renderMixWithParts(compiled, options)
 }

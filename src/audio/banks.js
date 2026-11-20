@@ -166,14 +166,15 @@ async function resolveSource(value, catalog, workspaceRoot) {
 export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
   const warnings = []
   if (compiled.tracks.length > 16) throw new Error('a score can use at most 16 tracks')
-  // A score whose every part is a plugin needs no SoundFont at all. Demanding
-  // one here would make a machine with no font unable to render a score it can
-  // play perfectly — the exact opposite of what the plugin path is for.
-  if (compiled.tracks.every((track) => track.vst && track.vst.plugin)) {
+  // A score whose every part sounds elsewhere (a plugin process, a hardware
+  // module) needs no SoundFont at all. Demanding one here would make a machine
+  // with no font unable to render a score it can play perfectly — the exact
+  // opposite of what those paths are for.
+  if (compiled.tracks.every((track) => (track.vst && track.vst.plugin) || track.hw)) {
     return {
       banks: [],
       layout: new Map(),
-      warnings: ['every part is a VST plugin; no SoundFont was loaded'],
+      warnings: ['every part sounds outside the SoundFont engine; no font was loaded'],
       fonts: [],
     }
   }

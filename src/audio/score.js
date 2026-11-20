@@ -191,6 +191,41 @@ function normalizeVst(spec, trackName) {
   return { plugin, params, ...(controls ? { controls } : {}) }
 }
 
+/**
+ * A hardware part: notes leave through a MIDI port and the sound comes back
+ * through a line input. It is the one source that cannot be rendered faster
+ * than it plays, and the one whose latency belongs to the wire rather than to
+ * the software — hence `latencyMs`, measured once per rig by
+ * `anyaudio_midiout calibrate`.
+ */
+function normalizeHw(spec, trackName) {
+  if (spec === undefined || spec === null || spec === false) return undefined
+  const raw = typeof spec === 'string' ? { port: spec } : spec
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ScoreError(`track "${trackName}": hw must be a MIDI port name or { port, channel, program }`)
+  }
+  const port = typeof raw.port === 'string' ? raw.port.trim() : ''
+  if (!port) {
+    throw new ScoreError(
+      `track "${trackName}": hw needs a "port" — the name of a MIDI output (anyaudio_midiout action "ports" lists them)`,
+    )
+  }
+  const wantedChannel = Number(raw.channel)
+  const channel = Number.isInteger(wantedChannel) ? Math.max(0, Math.min(15, wantedChannel)) : 0
+  const wantedProgram = Number(raw.program)
+  const program = Number.isInteger(wantedProgram) ? Math.max(0, Math.min(127, wantedProgram)) : undefined
+  const captureDevice = typeof raw.captureDevice === 'string' && raw.captureDevice.trim() ? raw.captureDevice.trim() : undefined
+  const wantedLatency = Number(raw.latencyMs)
+  const latencyMs = Number.isFinite(wantedLatency) ? Math.max(0, wantedLatency) : undefined
+  return {
+    port,
+    channel,
+    ...(program === undefined ? {} : { program }),
+    ...(captureDevice ? { captureDevice } : {}),
+    ...(latencyMs === undefined ? {} : { latencyMs }),
+  }
+}
+
 function mulberry32(seed) {
   let a = seed >>> 0
   return () => {
@@ -351,8 +386,13 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
     // A plugin is its own instrument in its own process: it does not claim one
     // of the 16 SoundFont channels, and its bank/program events are meaningless.
     const vst = normalizeVst(track.vst, name)
+    if (vst && track.hw) {
+      throw new ScoreError(`track "${name}" asks for both vst and hw; a part has one sound source — keep one of them`)
+    }
+    const hw = vst ? undefined : normalizeHw(track.hw, name)
+    const external = Boolean(vst || hw)
     let channel
-    if (vst) {
+    if (external) {
       channel = 0
     } else {
       channel = Number.isInteger(track.channel) ? track.channel : drums ? 9 : undefined
@@ -377,7 +417,7 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
 
     const events = []
     const program = drums ? 0 : instrument.program
-    if (!vst) {
+    if (!external) {
       events.push({ t: 0, type: 'bank', channel, bank: instrument.bank })
       events.push({ t: 0, type: 'program', channel, program })
       events.push({ t: 0, type: 'cc', channel, controller: 7, value: cc7For(gainDb - gainCeiling) })
@@ -401,6 +441,7 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
       name, channel, program, bank: instrument.bank, instrument: instrument.label, source,
       drums, gainDb, pan, reverb, chorus, mixGain, notes, events, endSec: end,
       ...(vst ? { vst } : {}),
+      ...(hw ? { hw } : {}),
     }
   })
 

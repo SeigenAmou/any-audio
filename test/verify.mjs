@@ -7,7 +7,7 @@ import { compileScore, parsePitch } from '../src/audio/score.js'
 import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
 import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
-import { planOffset, pickProgram } from '../src/audio/banks.js'
+import { planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
 import { registerAllTools } from '../src/tools/index.js'
 import { findFfmpeg, runFfmpeg } from '../src/tools/shared.js'
@@ -1549,6 +1549,54 @@ await test('anyaudio_record lists inputs and captures whatever the cable carries
     assert(Array.isArray(captured.warnings) && captured.warnings.some((line) => /silence/.test(line)),
       'a silent capture says so instead of failing')
   }
+})
+
+await test('a hardware part claims no SoundFont channel and still compiles', async () => {
+  const compiled = compileScore({
+    title: 'hw',
+    tracks: [
+      { name: 'piano', instrument: 'piano', notes: [[0, 1, 'C4']] },
+      { name: 'strings', hw: { port: 'SD-20 PART A', channel: 1, program: 48, latencyMs: 66 }, notes: [[0, 1, 'C4']] },
+    ],
+  })
+  const part = compiled.tracks.find((track) => track.name === 'strings')
+  assert(part.hw.port === 'SD-20 PART A', 'the port is kept')
+  assert(part.hw.channel === 1, 'the channel is kept')
+  assert(part.hw.program === 48, 'the program is kept')
+  assert(part.hw.latencyMs === 66, 'the latency is kept')
+  // A module is not a SoundFont voice: sending it bank/program/CC7 events would
+  // make the SoundFont engine try to play the part it cannot hear.
+  assert(part.events.every((event) => event.type !== 'program' && event.type !== 'bank'), 'no SoundFont program events are generated')
+  assert(Number.isInteger(compiled.tracks.find((track) => track.name === 'piano').channel), 'the SoundFont part still got a real channel')
+  // The hardware part does not reserve channel 0, so a SoundFont part may still
+  // take it: the two live in different machines.
+  const shared = compileScore({
+    tracks: [
+      { name: 'h', hw: 'SD-20 PART A', notes: [[0, 1, 'C4']] },
+      { name: 'p', channel: 0, instrument: 'piano', notes: [[0, 1, 'C4']] },
+    ],
+  })
+  assert(shared.tracks.find((track) => track.name === 'p').channel === 0, 'channel 0 is free for a SoundFont part')
+
+  const pure = compileScore({ tracks: [{ name: 'only', hw: 'SD-20 PART A', notes: [[0, 1, 'C4']] }] })
+  const planned = await planFonts(pure, {})
+  assert(planned.banks.length === 0, 'a pure-hardware score loads no SoundFont bank')
+
+  let both = null
+  try {
+    compileScore({ tracks: [{ name: 'x', vst: 'a.vst3', hw: 'SD-20 PART A', notes: [[0, 1, 'C4']] }] })
+  } catch (error) {
+    both = error
+  }
+  assert(both && /both vst and hw/.test(both.message), 'a part with two sound sources is refused')
+
+  let noPort = null
+  try {
+    compileScore({ tracks: [{ name: 'x', hw: { channel: 1 }, notes: [[0, 1, 'C4']] }] })
+  } catch (error) {
+    noPort = error
+  }
+  assert(noPort && /hw needs a "port"/.test(noPort.message), 'a hardware part without a port says what it needs')
 })
 
 await test('anyaudio_midiout lists ports and refuses a performance with nothing to play', async () => {
