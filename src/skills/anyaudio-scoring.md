@@ -179,6 +179,29 @@ MIDI 不是音频：它不进工程、不参与混音、`anyaudio://timeline` �
 
 外来的 `.mid`（别人给的编曲、旧工程的导出）也能学：`action:"learn", file:"x.mid"`。学完把卡片留在货架上，下次按它写。
 
+## 用本机的合成器（anyaudio_vst）
+
+SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声音它给不了——Roland 的 JUNO/JUPITER、TB-303 的滑音、SRX 的采样乐器。本机装了 VST3 时，可以直接让这些插件出声。
+
+先 `action:"status"`：它告诉你 Python 与 pedalboard 在不在（不在就告诉用户装一下，别自己 pip install）。然后 `action:"scan"` 列出能加载的插件（已经滤掉 3–6KB 的重定向桩和授权不明的替身文件）。`action:"info"` 给出某个插件的参数名与原始取值范围，改音色就靠它。
+
+`action:"render"` 一次渲染一个插件的若干个音：
+
+```json
+{"action":"render","plugin":"JUNO-106","notes":[[0,1.2,60,100],[1.2,1.2,67,96]],"params":{"lfo_rate":96},"durationSec":3}
+```
+
+`notes` 是 `[开始秒, 时长秒, MIDI 音高, 力度, 通道?]`，和弦就写成一串同起点的音；`params` 的键名来自 `action:"info"`，值是插件自己的原始范围（不是 0..1）。渲染结果是一条普通音频素材（`snapshotKind: "vst-render"`），进工程后和其它轨道一样可以加效果、调增益、被 duck。
+
+**这台机器上量到的事实**（不是猜测，别重复排查）：
+
+- 23 个 Roland 插件能出声：JUNO-106、JUNO-60、JUPITER-4/8、JV-1080、JX-3P、SH-101、PROMARS、SYSTEM-100/8、TB-303、全部 SRX 与 EARTH 系列。
+- **TR-808/909/707/727/606 能加载、参数齐全，但渲染全程静音**，16 个通道、24–84 音域、program change 之后都是 0.0000——这些鼓机在本机未授权。要鼓就用 SoundFont 的鼓组，别在 TR 上耗时间。
+- Padshop、Retrologue、ZENOLOGY、Galaxias **加载会一直挂着**（超时 25 秒被强制杀掉）。`TIMEOUT` 是结论，不是失败重试的信号。
+- NeuralNote、Chord Analyzer MIDI 加载不了；JC-120、RE-201 这类效果器没有可播放的音符。
+
+所以：VST 用在「音色本身是主角」的地方——一段合成器主线、一个 303 低音、一个 SRX 钢琴。铺底、和声、鼓这些量大又不挑音色的部分继续用 `anyaudio_music` 的 SoundFont，速度快、可逐轨测量、能导出 .mid。一次 `render` 只驱动一个插件；要多个插件就调多次，拿到几条音频再在工程里叠。
+
 ## 与画面对齐
 
 - 音乐段落切换对齐分镜切换点，不要在小节中间硬切。

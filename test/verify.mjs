@@ -501,7 +501,7 @@ await test('muxing keeps the video length when the audio is shorter or longer', 
 })
 
 await test('tool definitions are complete and discoverable', async () => {
-  assert(tools.size === 8, `expected 8 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
+  assert(tools.size === 9, `expected 9 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
   for (const definition of tools.values()) {
     assert(typeof definition.name === 'string' && definition.name.startsWith('anyaudio_'), `bad tool name ${definition.name}`)
     assert(definition.description.length > 80, `${definition.name} needs a descriptive description`)
@@ -1320,6 +1320,37 @@ await test('anyaudio_style measures a score and keeps the card on the shelf', as
     else process.env.ANYAUDIO_STYLE_DIR = previous
     await rm(styleDir, { recursive: true, force: true })
   }
+})
+
+await test('anyaudio_vst finds installed plugins and plays one when a bridge exists', async () => {
+  const vst = tools.get('anyaudio_vst')
+  const scanned = await vst.execute({ action: 'scan', limit: 200 }, exec)
+  assertMatchesOutputSchema(vst, scanned)
+  assert(Array.isArray(scanned.plugins), 'scan returns a plugin array')
+  assert(typeof scanned.available === 'boolean', 'scan reports whether the python bridge is ready')
+  if (!scanned.available || scanned.count === 0) {
+    console.log('     (no pedalboard, or no VST3 installed — the render half is skipped)')
+    return
+  }
+  // A plugin that waits for a licence window cannot be driven headless (measured:
+  // Steinberg's Padshop hangs inside the loader). Prefer a software synth that was
+  // measured to render, and treat a timeout or load failure as a fact about the
+  // machine rather than a broken bridge.
+  const target = scanned.plugins.find((entry) => /JUNO|JUPITER|SH-101|TB-303|SYSTEM/i.test(entry.name)) ?? scanned.plugins[0]
+  let rendered
+  try {
+    rendered = await vst.execute({ action: 'render', plugin: target.path, notes: [[0, 1, 60, 100]], durationSec: 2 }, exec)
+  } catch (error) {
+    if (error.code === 'TIMEOUT' || error.code === 'LOAD_FAILED') {
+      console.log(`     (${target.name} will not load headless: ${error.code} — skipped)`)
+      return
+    }
+    throw error
+  }
+  assertMatchesOutputSchema(vst, rendered)
+  assert(rendered.ok === true, 'render reports ok')
+  assert(rendered.durationSec > 0, 'render reports a length')
+  assert(typeof rendered.file === 'string' && rendered.file.length > 0, 'render names the file it wrote')
 })
 
 if (!hadAnyAudioDir) {
