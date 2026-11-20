@@ -4,6 +4,7 @@ import { planFonts, resolveConfiguredDefault } from '../audio/banks.js'
 import { compileScore } from '../audio/score.js'
 import { encodeMidiFile } from '../audio/midi-file.js'
 import { renderScore } from '../audio/renderers.js'
+import { renderMixWithVst, renderVstStem, vstTracksOf } from '../audio/vst-track.js'
 import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
@@ -174,7 +175,23 @@ export const musicToolDefinition = finalizeTool({
     // for (improvement plan 04; measured: 9.5 MB of a 49.6s score sat in `out/`
     // with nothing in the project referencing it).
     const target = scratchPath(workspaceRoot, `score-${nowStamp()}.wav`)
-    const rendered = await renderScore(compiled, { banks: plan.banks, layout: plan.layout, sampleRate, durationSec, peakDb, normalize })
+    // A score may mix SoundFont parts and plugin parts. The plugin half renders
+    // in its own processes and is summed onto the SoundFont half before the one
+    // master gain is applied — see audio/vst-track.js for why the two halves
+    // cannot be normalised separately.
+    let vstScratch = 0
+    const makeVstScratch = () => scratchPath(workspaceRoot, `vst-${nowStamp()}-${vstScratch++}.wav`)
+    const vstParts = vstTracksOf(compiled)
+    const rendered = vstParts.length > 0
+      ? await renderMixWithVst(compiled, {
+        soundFontOptions: { banks: plan.banks, layout: plan.layout },
+        sampleRate,
+        durationSec,
+        peakDb,
+        normalize,
+        makeScratch: makeVstScratch,
+      })
+      : await renderScore(compiled, { banks: plan.banks, layout: plan.layout, sampleRate, durationSec, peakDb, normalize })
     const written = await writeWavFile(target, rendered.channels, sampleRate)
     // Replace or append, decided before anything is written.
     //
@@ -231,9 +248,11 @@ export const musicToolDefinition = finalizeTool({
     const projectRel = relativeToWorkspace(workspaceRoot, projectDir(workspaceRoot, projectId))
     const { levels } = await eachTrackStem(compiled, {
       gain,
-      renderOne: (track) => renderScore(compiled, {
-        banks: plan.banks, layout: plan.layout, sampleRate, durationSec, normalize: false, onlyTrack: track.name,
-      }),
+      renderOne: (track) => track.vst
+        ? renderVstStem(track, { sampleRate, durationSec, out: makeVstScratch() })
+        : renderScore(compiled, {
+          banks: plan.banks, layout: plan.layout, sampleRate, durationSec, normalize: false, onlyTrack: track.name,
+        }),
       onStem: args.stems === true
         ? async (track, channels, level) => {
           // `\w` is ASCII-only, so every Chinese track name collapsed to the same
@@ -310,7 +329,10 @@ export const musicToolDefinition = finalizeTool({
       const level = levels.get(track.name)
       return {
         name: track.name,
-        instrument: track.instrument,
+        // A plugin part has no SoundFont instrument; naming the plugin is the
+        // only description that is true, and `piano` would send a person
+        // looking at the wrong thing.
+        instrument: track.vst ? `vst: ${basename(track.vst.plugin)}` : track.instrument,
         program: assignment?.program ?? track.program,
         source: assignment?.source,
         gainDb: track.gainDb,
@@ -326,6 +348,9 @@ export const musicToolDefinition = finalizeTool({
     })
     const warnings = [...compiled.warnings, ...plan.warnings, ...layoutNotes]
     if (defaultNote) warnings.push(defaultNote)
+    for (const failure of rendered.vstErrors ?? []) {
+      warnings.push(`the plugin part "${failure.name}" (${basename(failure.plugin)}) did not render — ${failure.message}. The rest of the score was mixed without it.`)
+    }
     if (args.durationSec !== undefined && compiled.durationSec > durationSec + 0.001) {
       warnings.push(`score runs to ${compiled.durationSec.toFixed(2)}s but durationSec is ${durationSec.toFixed(2)}s — notes past the end are cut; add tail or end the music earlier`)
     }

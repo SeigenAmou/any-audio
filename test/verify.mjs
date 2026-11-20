@@ -1353,6 +1353,48 @@ await test('anyaudio_vst finds installed plugins and plays one when a bridge exi
   assert(typeof rendered.file === 'string' && rendered.file.length > 0, 'render names the file it wrote')
 })
 
+await test('a score can hand one part to a plugin without stealing a SoundFont channel', async () => {
+  const compiled = compileScore({
+    title: 'hybrid',
+    tracks: [
+      { name: 'keys', instrument: 'piano', notes: [[0, 1, 'C4', 90]] },
+      { name: 'synth', vst: 'C:/plugins/Juno.vst3', notes: [[0, 1, 'C3', 100]] },
+      { name: 'lead', instrument: 'flute', notes: [[0, 1, 'A4', 80]] },
+    ],
+  }, { sampleRate: 48000 })
+  const synth = compiled.tracks.find((track) => track.name === 'synth')
+  assert(synth.vst?.plugin === 'C:/plugins/Juno.vst3', 'the short form "vst": "path" is kept')
+  assert(synth.channel === 0, 'a plugin part sits on channel 0')
+  const fontChannels = compiled.tracks.filter((track) => !track.vst).map((track) => track.channel)
+  assert(fontChannels.length === 2 && new Set(fontChannels).size === 2, 'the SoundFont parts still get distinct channels')
+  assert(!synth.events.some((event) => event.type === 'bank' || event.type === 'program'),
+    'a plugin part carries no bank/program events')
+
+  // The SoundFont engine must name the reason instead of playing the default
+  // piano for a part it cannot render.
+  const { renderCompiled } = await import('../src/audio/synth.js')
+  let message = ''
+  try {
+    await renderCompiled(compiled, { soundBank: {}, onlyTrack: 'synth' })
+  } catch (error) {
+    message = error.message
+  }
+  assert(/VST part/.test(message), `the SoundFont engine explains a plugin part belongs to the bridge, got: ${message}`)
+
+  let refused = ''
+  try {
+    compileScore({ tracks: [{ name: 'x', vst: {}, notes: [[0, 1, 60, 90]] }] })
+  } catch (error) {
+    refused = error.message
+  }
+  assert(/needs a "plugin" path/.test(refused), `a vst object without a plugin path is refused, got: ${refused}`)
+
+  const long = compileScore({
+    tracks: [{ name: 'y', vst: { plugin: 'C:/a.vst3', params: { cutoff: 40 } }, notes: [[0, 1, 60, 90]] }],
+  })
+  assert(long.tracks[0].vst.params.cutoff === 40, 'the long form keeps its parameters')
+})
+
 await test('anyaudio_record lists inputs and captures whatever the cable carries', async () => {
   const record = tools.get('anyaudio_record')
   const offered = await record.execute({ action: 'devices' }, exec)

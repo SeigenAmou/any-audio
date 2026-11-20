@@ -200,7 +200,17 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 - Padshop、Retrologue、ZENOLOGY、Galaxias **加载会一直挂着**（超时 25 秒被强制杀掉）。`TIMEOUT` 是结论，不是失败重试的信号。
 - NeuralNote、Chord Analyzer MIDI 加载不了；JC-120、RE-201 这类效果器没有可播放的音符。
 
-所以：VST 用在「音色本身是主角」的地方——一段合成器主线、一个 303 低音、一个 SRX 钢琴。铺底、和声、鼓这些量大又不挑音色的部分继续用 `anyaudio_music` 的 SoundFont，速度快、可逐轨测量、能导出 .mid。一次 `render` 只驱动一个插件；要多个插件就调多次，拿到几条音频再在工程里叠。
+所以：VST 用在「音色本身是主角」的地方——一段合成器主线、一个 303 低音、一个 SRX 钢琴。铺底、和声、鼓这些量大又不挑音色的部分继续用 `anyaudio_music` 的 SoundFont，速度快、可逐轨测量、能导出 .mid。一次单独的 `render` 只驱动一个插件；要多个插件就调多次，拿到几条音频再在工程里叠。
+
+**让插件直接进乐谱**（不必先渲染再贴）：`anyaudio_music` 的 score 里，任何一条轨道都可以把 `instrument` 换成 `vst`——
+
+```json
+{"name":"synth","vst":"C:/Program Files/Roland Cloud/JUNO-106/JUNO-106(VST3 64bit).vst3","notes":[[0,4,"C3",100]]}
+```
+
+`vst` 可以只写插件路径，也可以写成 `{"plugin":"…","params":{"filter_cutoff":40},"controls":[[1.5,74,90]]}`（`params` 用插件自己的原始范围，`controls` 是 `[秒, CC 号, 值]`，也可以直接用 score 的 `automation` 写）。插件声部**不占 MIDI 通道**，能和 SoundFont 声部混在同一首里：渲染时插件在自己的进程里出声，回来与 SoundFont 那半边相加，最后只做**一次**母带归一化——两边的高低关系就是谱面写的关系，不会因为各自归一化而被打乱。每个声部仍会单独渲染一次用来测电平，`stems:true` 时也照样拿到插件声部自己的 stem。
+
+某个插件没渲染出来不会带走整首：其余部分照常混音，回执的 `warnings` 里写明哪个声部、哪个插件、为什么。`TIMEOUT` 是结论，换插件，别重试。
 
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 

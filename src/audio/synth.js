@@ -90,8 +90,15 @@ export async function renderCompiled(compiled, options) {
   const bankList = Array.isArray(banks) && banks.length > 0 ? banks : soundBank ? [{ bank: soundBank, id: 'main', offset: 0 }] : null
   if (!bankList) throw new Error('renderCompiled needs a soundBank or a banks array')
 
-  const tracks = onlyTrack ? compiled.tracks.filter((track) => track.name === onlyTrack) : compiled.tracks
+  // A VST part has no SoundFont voice; it is rendered by the bridge and summed
+  // onto this mix (see audio/vst-track.js). Leaving it in would claim a channel
+  // and silently play the default piano.
+  const playable = compiled.tracks.filter((track) => !(track.vst && track.vst.plugin))
+  const tracks = onlyTrack ? playable.filter((track) => track.name === onlyTrack) : playable
   if (onlyTrack && tracks.length === 0) {
+    if (compiled.tracks.some((track) => track.name === onlyTrack && track.vst && track.vst.plugin)) {
+      throw new Error(`track "${onlyTrack}" is a VST part; render it through renderVstStem instead of the SoundFont engine`)
+    }
     throw new Error(`score has no track named "${onlyTrack}"`)
   }
   const endSec = tracks.reduce((max, track) => Math.max(max, track.endSec), 0)

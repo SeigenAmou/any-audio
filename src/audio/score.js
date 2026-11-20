@@ -168,6 +168,29 @@ export function resolveInstrument(spec) {
   throw new Error(`invalid instrument: ${String(spec)}`)
 }
 
+/**
+ * A track may name a VST3 plugin instead of a SoundFont preset. Accept the
+ * short form (`"vst": "C:/…/Juno.vst3"`) and the long one
+ * (`{ plugin, params, controls }`); refuse anything else with the reason,
+ * because a silently ignored instrument is the worst outcome here — the part
+ * renders through the default piano and sounds wrong for no visible reason.
+ */
+function normalizeVst(spec, trackName) {
+  if (spec === undefined || spec === null || spec === false) return undefined
+  const raw = typeof spec === 'string' ? { plugin: spec } : spec
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ScoreError(`track "${trackName}": vst must be a .vst3 path or { plugin, params }`)
+  }
+  const plugin = typeof raw.plugin === 'string' ? raw.plugin.trim() : ''
+  if (!plugin) throw new ScoreError(`track "${trackName}": vst needs a "plugin" path to a .vst3 file`)
+  const params = raw.params && typeof raw.params === 'object' && !Array.isArray(raw.params) ? raw.params : {}
+  const controls = Array.isArray(raw.controls)
+    ? raw.controls.filter((entry) => Array.isArray(entry) && entry.length >= 3 && entry.every((value) => Number.isFinite(Number(value))))
+      .map((entry) => [Number(entry[0]), Number(entry[1]), Number(entry[2])])
+    : undefined
+  return { plugin, params, ...(controls ? { controls } : {}) }
+}
+
 function mulberry32(seed) {
   let a = seed >>> 0
   return () => {
@@ -325,14 +348,22 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
     const track = raw ?? {}
     const name = String(track.name ?? `track-${index + 1}`)
     const drums = track.drums === true || track.kit === true
-    let channel = Number.isInteger(track.channel) ? track.channel : drums ? 9 : undefined
-    if (channel === undefined) {
-      channel = [...Array(16).keys()].find((candidate) => !usedChannels.has(candidate) && candidate !== 9)
+    // A plugin is its own instrument in its own process: it does not claim one
+    // of the 16 SoundFont channels, and its bank/program events are meaningless.
+    const vst = normalizeVst(track.vst, name)
+    let channel
+    if (vst) {
+      channel = 0
+    } else {
+      channel = Number.isInteger(track.channel) ? track.channel : drums ? 9 : undefined
+      if (channel === undefined) {
+        channel = [...Array(16).keys()].find((candidate) => !usedChannels.has(candidate) && candidate !== 9)
+      }
+      if (channel === undefined) throw new ScoreError('ran out of free MIDI channels; merge some tracks')
+      if (channel < 0 || channel > 15) throw new ScoreError(`track "${name}": channel must be 0..15`)
+      if (usedChannels.has(channel)) throw new ScoreError(`track "${name}": channel ${channel} is already used by another track`)
+      usedChannels.add(channel)
     }
-    if (channel === undefined) throw new ScoreError('ran out of free MIDI channels; merge some tracks')
-    if (channel < 0 || channel > 15) throw new ScoreError(`track "${name}": channel must be 0..15`)
-    if (usedChannels.has(channel)) throw new ScoreError(`track "${name}": channel ${channel} is already used by another track`)
-    usedChannels.add(channel)
 
     const instrument = resolveInstrument(track.instrument ?? track.program ?? (drums ? 'drums' : 'piano'))
     const source = typeof track.source === 'string' && track.source.trim() ? track.source.trim() : undefined
@@ -346,12 +377,14 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
 
     const events = []
     const program = drums ? 0 : instrument.program
-    events.push({ t: 0, type: 'bank', channel, bank: instrument.bank })
-    events.push({ t: 0, type: 'program', channel, program })
-    events.push({ t: 0, type: 'cc', channel, controller: 7, value: cc7For(gainDb - gainCeiling) })
-    events.push({ t: 0, type: 'cc', channel, controller: 10, value: Math.round((pan + 1) * 63.5) })
-    events.push({ t: 0, type: 'cc', channel, controller: 91, value: Math.round(reverb * 127) })
-    if (chorus > 0) events.push({ t: 0, type: 'cc', channel, controller: 93, value: Math.round(chorus * 127) })
+    if (!vst) {
+      events.push({ t: 0, type: 'bank', channel, bank: instrument.bank })
+      events.push({ t: 0, type: 'program', channel, program })
+      events.push({ t: 0, type: 'cc', channel, controller: 7, value: cc7For(gainDb - gainCeiling) })
+      events.push({ t: 0, type: 'cc', channel, controller: 10, value: Math.round((pan + 1) * 63.5) })
+      events.push({ t: 0, type: 'cc', channel, controller: 91, value: Math.round(reverb * 127) })
+      if (chorus > 0) events.push({ t: 0, type: 'cc', channel, controller: 93, value: Math.round(chorus * 127) })
+    }
     for (const note of notes) {
       events.push({ t: note.start, type: 'on', channel, note: note.midi, velocity: note.velocity })
       events.push({ t: note.start + note.duration, type: 'off', channel, note: note.midi })
@@ -362,6 +395,7 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
     return {
       name, channel, program, bank: instrument.bank, instrument: instrument.label, source,
       drums, gainDb, pan, reverb, chorus, notes, events, endSec: end,
+      ...(vst ? { vst } : {}),
     }
   })
 
