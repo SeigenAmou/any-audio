@@ -501,7 +501,7 @@ await test('muxing keeps the video length when the audio is shorter or longer', 
 })
 
 await test('tool definitions are complete and discoverable', async () => {
-  assert(tools.size === 7, `expected 7 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
+  assert(tools.size === 8, `expected 8 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
   for (const definition of tools.values()) {
     assert(typeof definition.name === 'string' && definition.name.startsWith('anyaudio_'), `bad tool name ${definition.name}`)
     assert(definition.description.length > 80, `${definition.name} needs a descriptive description`)
@@ -1285,6 +1285,41 @@ await test('anyaudio_music can hand the arrangement back as a .mid', async () =>
   const notes = parsed.tracks.reduce((sum, track) => sum + track.notes.length, 0)
   assert(notes === 2, `both notes are in the exported file, got ${notes}`)
   near(parsed.durationSec, 2, 0.05, 'the arrangement keeps the render length')
+})
+
+await test('anyaudio_style measures a score and keeps the card on the shelf', async () => {
+  const styleDir = join(tmpDir, 'styles')
+  const previous = process.env.ANYAUDIO_STYLE_DIR
+  process.env.ANYAUDIO_STYLE_DIR = styleDir
+  try {
+    const learned = await tools.get('anyaudio_style').execute({
+      action: 'learn',
+      name: '风格测试',
+      bpm: 100,
+      score: {
+        title: '风格测试',
+        tracks: [
+          { name: 'piano', instrument: 'piano', notes: [[0, 3.5, 'C3'], [0, 0.5, 'C4'], [0.5, 0.5, 'D4'], [1, 0.5, 'E4'], [1.5, 0.5, 'F4'], [2, 0.5, 'G4'], [2.5, 0.5, 'A4'], [3, 0.5, 'B4'], [3.5, 1, 'C5']] },
+          { name: 'kit', drums: true, notes: [[0, 0.25, 36], [0.5, 0.25, 42]] },
+        ],
+      },
+    }, exec)
+    assert(learned.id === '风格测试', `the id comes from the name, got ${learned.id}`)
+    assert(learned.card.key.label === 'C major', `C major is detected from the scale, got ${learned.card.key.label}`)
+    assert(learned.card.size.parts === 2, 'both parts are measured')
+    assert(learned.advice.length > 0, 'the card carries advice')
+    const listed = await tools.get('anyaudio_style').execute({ action: 'list' }, exec)
+    assert(listed.cards.length === 1, 'the card is on the shelf')
+    const shown = await tools.get('anyaudio_style').execute({ action: 'show', id: learned.id }, exec)
+    assert(shown.markdown.includes('风格卡'), 'the markdown page names the card')
+    await tools.get('anyaudio_style').execute({ action: 'remove', id: learned.id }, exec)
+    const after = await tools.get('anyaudio_style').execute({ action: 'list' }, exec)
+    assert(after.cards.length === 0, 'removing takes it off the shelf')
+  } finally {
+    if (previous === undefined) delete process.env.ANYAUDIO_STYLE_DIR
+    else process.env.ANYAUDIO_STYLE_DIR = previous
+    await rm(styleDir, { recursive: true, force: true })
+  }
 })
 
 if (!hadAnyAudioDir) {
