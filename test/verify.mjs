@@ -1422,6 +1422,49 @@ await test('anyaudio_vst finds installed plugins and plays one when a bridge exi
   assert(typeof rendered.file === 'string' && rendered.file.length > 0, 'render names the file it wrote')
 })
 
+await test('a saved patch keeps a plugin and the knobs that made the sound', async () => {
+  const vst = tools.get('anyaudio_vst')
+  const shelf = join(tmpDir, 'vst-presets')
+  const previous = process.env.ANYAUDIO_VST_PRESET_DIR
+  process.env.ANYAUDIO_VST_PRESET_DIR = shelf
+  try {
+    const saved = await vst.execute({
+      action: 'preset',
+      presetAction: 'save',
+      name: 'warm pad',
+      plugin: 'C:\\Program Files\\Common Files\\VST3\\JUNO-106.vst3',
+      params: { lfo_rate: 96, cutoff: 12 },
+      note: '慢起音，不要混响',
+    }, exec)
+    assert(saved.id === 'warm-pad', `the id comes from the name, got ${saved.id}`)
+    assert(saved.params === 2, `both knobs were kept, got ${saved.params}`)
+    const listed = await vst.execute({ action: 'preset' }, exec)
+    assert(listed.count === 1, 'the patch is on the shelf')
+    assert(listed.presets[0].pluginName === 'JUNO-106.vst3', 'the plugin name is kept for reading')
+    const shown = await vst.execute({ action: 'preset', presetAction: 'show', name: 'warm pad' }, exec)
+    assert(shown.parameters.length === 2, 'show lists the knobs')
+    const { resolveScorePresets } = await import('../src/audio/vst-preset.js')
+    const resolved = await resolveScorePresets({ tracks: [{ name: 'pad', vst: { preset: 'warm pad', params: { cutoff: 99 } } }] })
+    assert(String(resolved.tracks[0].vst.plugin).endsWith('JUNO-106.vst3'), 'the patch supplies the plugin path')
+    assert(resolved.tracks[0].vst.params.cutoff === 99, 'a value written on the track wins over the patch')
+    assert(resolved.tracks[0].vst.params.lfo_rate === 96, 'the other knobs still come from the patch')
+    let missing = null
+    try {
+      await vst.execute({ action: 'preset', presetAction: 'show', name: 'nope' }, exec)
+    } catch (error) {
+      missing = error
+    }
+    assert(missing && /no saved patch/.test(missing.message), 'a patch that does not exist says so')
+    await vst.execute({ action: 'preset', presetAction: 'remove', name: 'warm-pad' }, exec)
+    const after = await vst.execute({ action: 'preset' }, exec)
+    assert(after.count === 0, 'removing takes it off the shelf')
+  } finally {
+    if (previous === undefined) delete process.env.ANYAUDIO_VST_PRESET_DIR
+    else process.env.ANYAUDIO_VST_PRESET_DIR = previous
+    await rm(shelf, { recursive: true, force: true })
+  }
+})
+
 await test('a score can hand one part to a plugin without stealing a SoundFont channel', async () => {
   const compiled = compileScore({
     title: 'hybrid',

@@ -212,6 +212,14 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 某个插件没渲染出来不会带走整首：其余部分照常混音，回执的 `warnings` 里写明哪个声部、哪个插件、为什么。`TIMEOUT` 是结论，换插件，别重试。
 
+**把调好的音色存成一个名字**：`params` 里那些数字，下次要用还得重新抄一遍。调好一次就存下来——
+
+```json
+{"action":"preset","presetAction":"save","name":"juno warm pad","plugin":"C:/Program Files/Roland Cloud/JUNO-106/JUNO-106(VST3 64bit).vst3","params":{"lfo_rate":96,"filter_cutoff":40},"note":"慢起音，不要混响"}
+```
+
+之后乐谱里只写 `{"name":"synth","vst":{"preset":"juno warm pad"},"notes":[[0,4,"C3",100]]}`，插件路径和整块参数都由这张卡补上；轨上再写的 `params` 只覆盖那一颗旋钮，其余仍来自卡。`presetAction:"list"` 看全部，`"show"` 看某一张的参数，`"remove"` 删掉。卡存在 `~/.dsh/anyaudio/vst-presets/`，跟风格卡一样是机器级的——换个项目、换个会话照样能用。名字里有中文不会出问题，重名会自动加 `-2`。
+
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 
 有些声音既不在 SoundFont 里也不在插件里，而在机器外面：一台 EDIROL SD-20、一块机架音源、一支接在声卡上的麦克风。它们自己发声，宿主只能从线路输入把它听回来。
