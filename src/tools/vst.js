@@ -10,8 +10,8 @@
 // SoundFont render: it can be mixed, faded, cut and re-rendered per track, and
 // nothing downstream needs to know it came from a plugin.
 
-import { readFile, rm } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { mkdir, readFile, rm } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import { parseWav, toDb } from '../audio/wav.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
@@ -145,8 +145,8 @@ export const vstToolDefinition = finalizeTool({
         delivered: { type: 'string' },
         durationSec: { type: 'number' },
         sampleRate: { type: 'number' },
-        peakDb: { type: 'number' },
-        rmsDb: { type: 'number' },
+        peakDb: { type: ['number', 'null'], description: 'Null when the plugin rendered silence.' },
+        rmsDb: { type: ['number', 'null'] },
         attached: { type: 'array', items: { type: 'object', additionalProperties: true } },
         warnings: { type: 'array', items: { type: 'string' } },
       },
@@ -243,6 +243,7 @@ export const vstToolDefinition = finalizeTool({
     const params = args.params === undefined ? undefined : await readJsonParam(args.params, 'params', { workspaceRoot })
 
     const target = scratchPath(workspaceRoot, `vst-${nowStamp()}.wav`)
+    await mkdir(dirname(target), { recursive: true })
     const warnings = []
     let rendered
     try {

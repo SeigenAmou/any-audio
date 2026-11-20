@@ -202,6 +202,25 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 所以：VST 用在「音色本身是主角」的地方——一段合成器主线、一个 303 低音、一个 SRX 钢琴。铺底、和声、鼓这些量大又不挑音色的部分继续用 `anyaudio_music` 的 SoundFont，速度快、可逐轨测量、能导出 .mid。一次 `render` 只驱动一个插件；要多个插件就调多次，拿到几条音频再在工程里叠。
 
+## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
+
+有些声音既不在 SoundFont 里也不在插件里，而在机器外面：一台 EDIROL SD-20、一块机架音源、一支接在声卡上的麦克风。它们自己发声，宿主只能从线路输入把它听回来。
+
+- `anyaudio_record`：`action:"devices"` 列出所有输入（每个物理口在 MME/DirectSound/WASAPI/WDM-KS 各出现一次，同名的会一起列出）；`action:"record"` 录指定秒数到素材。`device` 可以写序号也可以写名字的一部分，名字有歧义时它要求你给序号而不是瞎猜。
+- `anyaudio_midiout`：`action:"ports"` 列出 MIDI 输出与输入；`action:"play"` 往某个端口发音符（`notes` 与 VST 同一套写法，`[开始秒, 时长秒, 音高, 力度, 通道?]`）；带上 `captureDevice` 就一边弹一边把音源的线路输出录下来，两者共用同一个时钟。
+- `action:"calibrate"`：一次性的测量。它连发几个短 ping 同时录音，报出音频比 MIDI 晚多少毫秒。**换机器、换音源、换驱动之后都要重测**——这个数字决定硬件声部会不会听起来迟。
+
+**为什么必须校准**：MIDI 消息是立刻离开的，音源内部的音源引擎要过几十毫秒才出声。不补这段，音源声部会比其它轨道整体晚一截，而且每台设备晚的量不一样。校准得到的 `latencyMs` 传回 `play` 的 `trimLatencyMs`，录制时把这段前置延迟裁掉，音头才会落在谱面写的时刻上。
+
+**这台机器上量到的事实**：
+
+- 音源是 SD-20，MIDI 输出里叫 `SD-20 PART A`（0–15 通道）与 `SD-20 PART B`（16–31 通道），用 `port:"SD-20 PART A"` 这种写法不必记序号。
+- 音源的线路输出在系统里显示为 `麦克风 (3- USB Audio Device)`，不是名字里带 C-MEDIA 的那个；另有 `麦克风 (2- KT USB Audio)` 是别的设备。名字写错会录到一片静音，`anyaudio_record devices` 时看清 hostApi 是 WASAPI 的那一条。
+- 实测 `latencyMs` 约 **66 ms**（多次 ping 的离散度 1.6 ms，很稳）。不同驱动、不同缓冲下这个数会变，别把它当常量抄进代码。
+- 录音全程静音时先怀疑 ASIO4ALL：它会把输入口独占走，WASAPI 这边只拿到空数据。关掉 ASIO 宿主再录。
+
+**顺序**：`anyaudio_record devices` 找到输入 → `anyaudio_midiout ports` 找到端口 → `calibrate` 测一次 → 之后每次 `play` 都带 `trimLatencyMs`。要留在工程里就带 `projectId`，录制结果作为一条普通音频素材（`snapshotKind: "hardware-capture"`）进轨道，之后的混音、duck、导出与别的素材完全一样。
+
 ## 与画面对齐
 
 - 音乐段落切换对齐分镜切换点，不要在小节中间硬切。

@@ -501,7 +501,7 @@ await test('muxing keeps the video length when the audio is shorter or longer', 
 })
 
 await test('tool definitions are complete and discoverable', async () => {
-  assert(tools.size === 9, `expected 9 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
+  assert(tools.size === 11, `expected 11 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
   for (const definition of tools.values()) {
     assert(typeof definition.name === 'string' && definition.name.startsWith('anyaudio_'), `bad tool name ${definition.name}`)
     assert(definition.description.length > 80, `${definition.name} needs a descriptive description`)
@@ -1351,6 +1351,69 @@ await test('anyaudio_vst finds installed plugins and plays one when a bridge exi
   assert(rendered.ok === true, 'render reports ok')
   assert(rendered.durationSec > 0, 'render reports a length')
   assert(typeof rendered.file === 'string' && rendered.file.length > 0, 'render names the file it wrote')
+})
+
+await test('anyaudio_record lists inputs and captures whatever the cable carries', async () => {
+  const record = tools.get('anyaudio_record')
+  const offered = await record.execute({ action: 'devices' }, exec)
+  assertMatchesOutputSchema(record, offered)
+  assert(Array.isArray(offered.inputs), 'devices returns an input array')
+  assert(typeof offered.count === 'number', 'devices counts the inputs')
+  if (offered.count === 0) {
+    console.log('     (this machine exposes no audio input — the capture half is skipped)')
+    return
+  }
+  // A capture must be honest about silence, not fail: this machine's inputs may
+  // be held by an ASIO driver or carry nothing at all. The contract under test
+  // is "the WAV exists and its level is measured", plus the silence warning.
+  const chosen = offered.inputs.find((entry) => entry.hostApi?.toUpperCase().includes('WASAPI')) ?? offered.inputs[0]
+  let captured
+  try {
+    captured = await record.execute({ action: 'record', device: String(chosen.index), durationSec: 0.4, warmupSec: 0 }, exec)
+  } catch (error) {
+    if (error.code === 'TIMEOUT' || /not importable/.test(error.message)) {
+      console.log(`     (capture bridge unavailable: ${error.code ?? error.message} — skipped)`)
+      return
+    }
+    throw error
+  }
+  assertMatchesOutputSchema(record, captured)
+  assert(captured.ok === true, 'record reports ok')
+  assert(captured.durationSec > 0, 'record reports a length')
+  assert(typeof captured.file === 'string' && captured.file.length > 0, 'record names the file it wrote')
+  if (captured.peakDb === null) {
+    assert(Array.isArray(captured.warnings) && captured.warnings.some((line) => /silence/.test(line)),
+      'a silent capture says so instead of failing')
+  }
+})
+
+await test('anyaudio_midiout lists ports and refuses a performance with nothing to play', async () => {
+  const midiout = tools.get('anyaudio_midiout')
+  const status = await midiout.execute({ action: 'status' }, exec)
+  assertMatchesOutputSchema(midiout, status)
+  if (!status.available) {
+    console.log(`     (MIDI bridge unavailable: ${status.error ?? 'unknown'} — skipped)`)
+    return
+  }
+  const ports = await midiout.execute({ action: 'ports' }, exec)
+  assertMatchesOutputSchema(midiout, ports)
+  assert(Array.isArray(ports.outputs) && Array.isArray(ports.inputs), 'ports returns both directions')
+  // No notes are sent here on purpose: a test that plays the user's rack module
+  // is a sound, not a check. What a regression breaks is the refusal paths.
+  let refused = false
+  try {
+    await midiout.execute({ action: 'play' }, exec)
+  } catch (error) {
+    refused = /needs notes/.test(error.message)
+  }
+  assert(refused, 'play without notes is refused')
+  let needsDevice = false
+  try {
+    await midiout.execute({ action: 'calibrate', port: '0' }, exec)
+  } catch (error) {
+    needsDevice = /needs device/.test(error.message)
+  }
+  assert(needsDevice, 'calibrate without an input is refused')
 })
 
 if (!hadAnyAudioDir) {
