@@ -2,7 +2,7 @@ import { basename, join } from 'node:path'
 import { rm } from 'node:fs/promises'
 import { planFonts, resolveConfiguredDefault } from '../audio/banks.js'
 import { compileScore } from '../audio/score.js'
-import { renderCompiled } from '../audio/synth.js'
+import { renderScore } from '../audio/renderers.js'
 import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
@@ -169,7 +169,7 @@ export const musicToolDefinition = finalizeTool({
     // for (improvement plan 04; measured: 9.5 MB of a 49.6s score sat in `out/`
     // with nothing in the project referencing it).
     const target = scratchPath(workspaceRoot, `score-${nowStamp()}.wav`)
-    const rendered = await renderCompiled(compiled, { banks: plan.banks, layout: plan.layout, sampleRate, durationSec, peakDb, normalize })
+    const rendered = await renderScore(compiled, { banks: plan.banks, layout: plan.layout, sampleRate, durationSec, peakDb, normalize })
     const written = await writeWavFile(target, rendered.channels, sampleRate)
     // Replace or append, decided before anything is written.
     //
@@ -226,7 +226,7 @@ export const musicToolDefinition = finalizeTool({
     const projectRel = relativeToWorkspace(workspaceRoot, projectDir(workspaceRoot, projectId))
     const { levels } = await eachTrackStem(compiled, {
       gain,
-      renderOne: (track) => renderCompiled(compiled, {
+      renderOne: (track) => renderScore(compiled, {
         banks: plan.banks, layout: plan.layout, sampleRate, durationSec, normalize: false, onlyTrack: track.name,
       }),
       onStem: args.stems === true

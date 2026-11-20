@@ -501,7 +501,7 @@ await test('muxing keeps the video length when the audio is shorter or longer', 
 })
 
 await test('tool definitions are complete and discoverable', async () => {
-  assert(tools.size === 6, `expected 6 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
+  assert(tools.size === 7, `expected 7 tools, got ${tools.size}: ${[...tools.keys()].join(', ')}`)
   for (const definition of tools.values()) {
     assert(typeof definition.name === 'string' && definition.name.startsWith('anyaudio_'), `bad tool name ${definition.name}`)
     assert(definition.description.length > 80, `${definition.name} needs a descriptive description`)
@@ -1196,6 +1196,80 @@ await test('an unknown instrument names what is close instead of pointing at a l
   // A legal name is untouched.
   const { resolveInstrument } = await import('../src/audio/score.js')
   assert(resolveInstrument('piano').program === 0, 'a known instrument still resolves')
+})
+
+await test('a score survives a round trip through a MIDI file', async () => {
+  const { encodeMidiFile, parseMidiFile, scoreFromMidi } = await import('../src/audio/midi-file.js')
+  const score = {
+    title: 'roundtrip',
+    tracks: [
+      { name: 'piano', instrument: 'piano', notes: [[0, 4, 'C4', 90], [1, 4, 'C5'], [2, 4, 'C6'], [4, 8, ['C3', 'G3', 'C4'], 70]] },
+      { name: 'drums', drums: true, notes: [[0, 0.5, 36], [0.5, 0.5, 38], [4, 0.5, 42]] },
+    ],
+  }
+  const compiled = compileScore(score)
+  const buffer = encodeMidiFile(compiled, { bpm: 120, title: score.title })
+  const parsed = parseMidiFile(buffer)
+  assert(parsed.format === 1, 'a score exports as format 1')
+  assert(parsed.ppq === 480, 'default resolution is 480 ppq')
+  near(parsed.bpm, 120, 0.01, 'tempo')
+  const totalNotes = parsed.tracks.reduce((sum, track) => sum + track.notes.length, 0)
+  // Four piano onsets (the last one a three-note chord) plus three drum hits:
+  // the chord is three notes, not one.
+  assert(totalNotes === 9, `expected 9 notes, got ${totalNotes}`)
+  near(parsed.durationSec, 12, 0.001, 'the last note ends at 12s')
+
+  const back = scoreFromMidi(parsed, { title: 'again' })
+  const again = encodeMidiFile(compileScore(back), { bpm: 120, title: 'again' })
+  const parsedAgain = parseMidiFile(again)
+  // The bytes may differ (the title is part of the file, and the score gains
+  // explicit channels); the music may not. Comparing note identity — channel,
+  // pitch, start, length, velocity — is the check that says nothing was lost.
+  const key = (note) => `${note.channel}:${note.midi}:${note.start.toFixed(3)}:${note.duration.toFixed(3)}:${note.velocity}`
+  const before = parsed.tracks.flatMap((track) => track.notes.map(key)).sort()
+  const after = parsedAgain.tracks.flatMap((track) => track.notes.map(key)).sort()
+  assert(JSON.stringify(before) === JSON.stringify(after), `notes changed across the round trip:\n${before.join(', ')}\n${after.join(', ')}`)
+  assert(back.tracks.some((track) => track.drums === true && track.channel === 9), 'channel 10 comes back as a drum kit')
+})
+
+await test('anyaudio_midi exports, imports and analyzes a real file', async () => {
+  const definition = tools.get('anyaudio_midi')
+  assert(definition, 'anyaudio_midi must be registered')
+  const dir = join(repoRoot, '.anyaudio', 'test-tmp-midi')
+  await mkdir(dir, { recursive: true })
+  try {
+    const exported = await definition.execute({
+      action: 'export',
+      score: { title: 'tool', tracks: [{ name: 'lead', instrument: 'flute', notes: [[0, 1, 'A4'], [1, 1, 'C5']] }] },
+      output: join(dir, 'out.mid'),
+    }, exec)
+    assertMatchesOutputSchema(definition, exported)
+    assert(exported.ok === true, 'export returns ok')
+    const onDisk = await stat(join(dir, 'out.mid'))
+    assert(onDisk.size === exported.bytes, 'the file on disk is the one the reply reported')
+    assert(exported.tracks.length === 1 && exported.tracks[0].notes === 2, 'export names the part and its note count')
+
+    const imported = await definition.execute({ action: 'import', file: join(dir, 'out.mid') }, exec)
+    assertMatchesOutputSchema(definition, imported)
+    assert(imported.score.tracks.length === 1, 'one part comes back')
+    assert(imported.summary.notes === 2, 'both notes come back')
+    assert(imported.score.tracks[0].notes[0].length === 4, 'notes are [start, duration, pitch, velocity]')
+
+    const analyzed = await definition.execute({ action: 'analyze', file: join(dir, 'out.mid') }, exec)
+    assertMatchesOutputSchema(definition, analyzed)
+    assert(analyzed.analysis.tracks[0].range.length === 2, 'the pitch range is reported')
+    assert(analyzed.analysis.grid !== null && analyzed.analysis.grid.onGridRatio >= 0, 'grid alignment is reported')
+
+    let message = ''
+    try {
+      await definition.execute({ action: 'import' }, exec)
+    } catch (error) {
+      message = error.message
+    }
+    assert(/pass "file"/.test(message), `import without a file must say what to pass, got "${message}"`)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 if (!hadAnyAudioDir) {
