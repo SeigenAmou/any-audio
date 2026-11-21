@@ -22,7 +22,7 @@
 > What this fork adds on top of upstream:
 >
 > - **64-bit VST2 instruments render** through a second host (dawdreamer); VST3 keeps rendering through pedalboard. 32-bit plugins are listed but need a bridge.
-> - **Hardware sound modules as score parts** — write `"hw": "SD-20 PART A"` and the part is sent out as MIDI and recorded back from a line input.
+> - **Hardware sound modules as score parts** — write `"hw": "<a MIDI port of your module>"` (SD-20, SC-88Pro, XV-5080, SD-90 and the like) and the part is sent out as MIDI and recorded back from a line input.
 > - **Plugin presets** — import a `.vstpreset` / `.fxp` a person saved in their own host, or let the agent write an `.fxp` from named parameters when none exists.
 > - **Manuals for every sound source**, plugins included — written by hand, or imported from a PDF or a folder of a manufacturer's web pages.
 > - **Performance expression** — `score.expression` writes bends, vibrato, swells, sustain pedal and humanised timing onto a part.

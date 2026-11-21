@@ -28,7 +28,7 @@ An agent-driven audio production toolkit for music, sound effects, narration, an
 > 相对上游，本 fork 增加了：
 >
 > - **64 位 VST2 插件可以渲染**，通过第二套宿主（dawdreamer）；VST3 仍走 pedalboard。32 位插件只列出，需要桥接。
-> - **硬件音源可以当一个声部**——乐谱里写 `"hw": "SD-20 PART A"`，这一声部的 MIDI 送出去、再从线路输入录回来。
+> - **硬件音源可以当一个声部**——乐谱里写 `"hw": "<你模块的 MIDI 端口>"`（SD-20、SC-88Pro、XV-5080、SD-90 这一类），这一声部的 MIDI 送出去、再从线路输入录回来。
 > - **插件预设**——可以导入用户在宿主里存好的 `.vstpreset` / `.fxp`；没有现成预设时，Agent 也能按参数名自己写一个 `.fxp`。
 > - **每个音源都能挂说明书**（插件也算）——手写，或从厂商 PDF、一整个网页文件夹导入。
 > - **演奏表情**——`score.expression` 给声部写入弯音、颤音、渐强、延音踏板和人性化时值。
