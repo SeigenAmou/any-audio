@@ -18,6 +18,9 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_WORKER = resolve(here, '..', '..', 'engine', 'vst_worker.py')
+// 64-bit VST2 .dll files need a different backend: pedalboard only reads VST3
+// bundles, while dawdreamer is a real VST2 host. Same protocol, second worker.
+const DEFAULT_VST2_WORKER = resolve(here, '..', '..', 'engine', 'vst2_worker.py')
 
 // Redirect stubs (3–6 KB files that only point at the real one) are skipped by
 // size; the Virtual Guitarist trees are a user project in progress and are left
@@ -429,19 +432,86 @@ export function runVstWorker(requests, { timeoutMs = LOAD_TIMEOUT_MS, python = v
   })
 }
 
+/** Does this path name a 64-bit VST2 plugin (a bare .dll) rather than a VST3 bundle? */
+export function isVst2Plugin(pluginPath) {
+  return typeof pluginPath === 'string' && /\.dll$/i.test(pluginPath)
+}
+
+/** The dawdreamer worker script, overridable for a checkout that keeps it elsewhere. */
+export function vst2WorkerPath() {
+  return process.env.ANYAUDIO_VST2_WORKER || DEFAULT_VST2_WORKER
+}
+
+/** Same transport as runVstWorker, pointed at the VST2 backend. */
+export function runVst2Worker(requests, options = {}) {
+  return runVstWorker(requests, { ...options, worker: options.worker || vst2WorkerPath() })
+}
+
+/** Render a track through a 64-bit VST2 plugin. dawdreamer plays the whole MIDI
+ *  file rather than a note list, so the caller writes one — that also carries
+ *  the CC and pitch-bend events a patch may key off. */
+export async function renderVst2({ plugin, midiPath, params, durationSec, sampleRate = 48000, out, timeoutMs }) {
+  if (!midiPath) throw new VstHostError('midiPath must name a MIDI file', { code: 'BAD_INPUT', kind: 'param' })
+  if (!out) throw new VstHostError('out must be a WAV path', { code: 'BAD_OUTPUT', kind: 'param' })
+  const request = {
+    op: 'render',
+    plugin,
+    midi: midiPath,
+    durationSec: Number.isFinite(Number(durationSec)) ? Number(durationSec) : undefined,
+    sampleRate,
+    params: params && typeof params === 'object' ? params : undefined,
+    out,
+  }
+  const [reply] = await runVst2Worker([request], { timeoutMs: timeoutMs ?? RENDER_TIMEOUT_MS })
+  if (!reply?.ok) {
+    throw new VstHostError(reply?.error ?? 'the plugin rendered nothing', { code: 'RENDER_FAILED', kind: reply?.kind ?? 'render' })
+  }
+  return {
+    peak: reply.peak,
+    rms: reply.rms,
+    frames: reply.frames,
+    channels: reply.channels,
+    durationSec: reply.durationSec,
+    warnings: reply.warnings ?? [],
+  }
+}
+
 /** Is pedalboard installed for the python we would launch? */
 export async function vstStatus() {
   try {
     const [reply] = await runVstWorker([{ op: 'ping' }], { timeoutMs: 30000 })
     if (!reply?.ok) return { available: false, python: vstPython(), error: reply?.error ?? 'unknown' }
-    return { available: true, python: vstPython(), version: reply.python, pedalboard: reply.pedalboard }
+    return { available: true, python: vstPython(), version: reply.python, pedalboard: reply.pedalboard, vst2: await vst2Status() }
   } catch (error) {
     return { available: false, python: vstPython(), error: error.message }
   }
 }
 
+/** Is the dawdreamer backend, which plays 64-bit VST2 .dll files, usable? */
+export async function vst2Status() {
+  try {
+    const [reply] = await runVst2Worker([{ op: 'ping' }], { timeoutMs: 30000 })
+    if (!reply?.ok) return { available: false, error: reply?.error ?? 'unknown' }
+    return { available: true, dawdreamer: reply.dawdreamer, python: reply.python }
+  } catch (error) {
+    return { available: false, error: error.message }
+  }
+}
+
 /** Load one plugin and describe it. Never leaves a process behind. */
 export async function describeVst(plugin, options = {}) {
+  // A VST2 .dll cannot be loaded by pedalboard, so it is described by the
+  // dawdreamer backend instead. Same shape of reply either way.
+  if (isVst2Plugin(plugin)) {
+    const [reply] = await runVst2Worker([{ op: 'probe', plugin }], { timeoutMs: options.timeoutMs ?? LOAD_TIMEOUT_MS })
+    if (!reply?.ok) {
+      throw new VstHostError(reply?.error ?? 'the plugin could not be described', {
+        code: reply?.kind === 'load' ? 'LOAD_FAILED' : 'VST_ERROR',
+        kind: reply?.kind ?? 'load',
+      })
+    }
+    return { path: plugin, instrument: true, format: 'vst2', parameters: reply.parameters ?? [] }
+  }
   const [reply] = await runVstWorker([{ op: 'info', plugin }], { timeoutMs: options.timeoutMs ?? LOAD_TIMEOUT_MS })
   if (!reply?.ok) {
     throw new VstHostError(reply?.error ?? 'the plugin could not be described', {

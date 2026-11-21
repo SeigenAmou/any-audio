@@ -1235,6 +1235,26 @@ await test('a score survives a round trip through a MIDI file', async () => {
   assert(back.tracks.some((track) => track.drums === true && track.channel === 9), 'channel 10 comes back as a drum kit')
 })
 
+await test('a VST2 part is written from the plain note arrays the tool receives', async () => {
+  const { encodeMidiFile, parseMidiFile } = await import('../src/audio/midi-file.js')
+  // The tool hands over [[start, duration, midi, velocity], …] while the writer
+  // wants objects. Passing the arrays straight through made every note start at
+  // tick 0, which renders as silence rather than as the wrong rhythm.
+  const arrays = [[0, 0.8, 60, 100], [0.5, 0.8, 64, 100], [1, 1.2, 67, 100]]
+  const track = {
+    name: 'vst2',
+    channel: 0,
+    notes: arrays.map(([start, duration, midi, velocity]) => ({ start, duration, midi, velocity })),
+  }
+  const parsed = parseMidiFile(encodeMidiFile({ tracks: [track] }, { bpm: 120, title: 'vst2' }))
+  const notes = parsed.tracks.flatMap((entry) => entry.notes).sort((a, b) => a.start - b.start)
+  assert(notes.length === 3, `expected 3 notes, got ${notes.length}`)
+  near(notes[0].start, 0, 0.01, 'the first note starts at zero')
+  near(notes[1].start, 0.5, 0.01, 'the second note keeps its offset')
+  near(notes[2].start, 1, 0.01, 'the third note keeps its offset')
+  assert(notes.map((note) => note.midi).join(',') === '60,64,67', 'pitches travel with the notes')
+})
+
 await test('anyaudio_midi exports, imports and analyzes a real file', async () => {
   const definition = tools.get('anyaudio_midi')
   assert(definition, 'anyaudio_midi must be registered')

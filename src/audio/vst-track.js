@@ -11,11 +11,12 @@
 // Nothing here loads a plugin in-process: every render goes through
 // `renderVst`, which owns a child process and a hard deadline.
 
-import { readFile, rm } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { peakOf, parseWav, rmsOf, toDb } from './wav.js'
 import { renderCompiled } from './synth.js'
-import { renderVst, renderVstBatch } from './vst-host.js'
+import { isVst2Plugin, renderVst, renderVst2, renderVstBatch } from './vst-host.js'
 import { renderHwTracks } from './hw-track.js'
+import { encodeMidiFile } from './midi-file.js'
 
 /** A VST part is rendered one plugin process at a time; 20k notes is already
  *  far past what a single part should carry, and the limit turns a runaway
@@ -109,6 +110,30 @@ export async function renderVstStem(track, { sampleRate = 48000, durationSec, ou
     // by deleting the notes and still wants the rest of the score to render.
     return { channels: emptyPair(frames), frames, peakDb: null, rmsDb: null, plugin, warnings: ['the part has no notes'] }
   }
+  // Two backends, one shape. pedalboard reads VST3 bundles and takes a note
+  // list; dawdreamer is a VST2 host and plays a MIDI file, so a .dll part is
+  // written out as SMF first — which is also the only way to hand it CC and
+  // pitch-bend events, because dawdreamer has no per-event API.
+  if (isVst2Plugin(plugin)) {
+    const midiPath = `${out}.mid`
+    try {
+      const bytes = encodeMidiFile({ tracks: [track] }, { bpm: 120, title: track.name })
+      await writeFile(midiPath, bytes)
+      const reply = await renderVst2({
+        plugin,
+        midiPath,
+        params: track.vst?.params,
+        durationSec: frames / sampleRate,
+        sampleRate,
+        out,
+        timeoutMs,
+      })
+      return await stemFromRender(track, { out, frames, reply })
+    } finally {
+      await rm(midiPath, { force: true })
+      await rm(out, { force: true })
+    }
+  }
   try {
     const reply = await renderVst({
       plugin,
@@ -144,9 +169,17 @@ export async function renderVstTracks(compiled, { sampleRate, durationSec, makeS
   const parts = []
   const errors = []
 
+  // VST2 parts cannot join the batch: the batch shares one pedalboard process
+  // per plugin path, while a VST2 part needs its own dawdreamer run and its own
+  // MIDI file. So they are split off and rendered one at a time below.
   const groups = new Map()
+  const vst2Tracks = []
   for (const track of tracks) {
     const plugin = track.vst.plugin
+    if (isVst2Plugin(plugin)) {
+      vst2Tracks.push(track)
+      continue
+    }
     if (!groups.has(plugin)) groups.set(plugin, [])
     groups.get(plugin).push(track)
   }
@@ -213,6 +246,35 @@ export async function renderVstTracks(compiled, { sampleRate, durationSec, makeS
       } catch (error) {
         errors.push({ name: job.track.name, plugin, message: error.message, code: 'VST_ERROR' })
       }
+    }
+  }
+
+  // One VST2 part at a time: each is its own dawdreamer run, so there is no
+  // shared load cost to protect and one wedged loader only costs its own part.
+  for (const track of vst2Tracks) {
+    const plugin = track.vst.plugin
+    let notes
+    try {
+      notes = notesForVst(track)
+    } catch (error) {
+      errors.push({ name: track.name, plugin, message: error.message, code: error.code ?? 'VST_ERROR' })
+      continue
+    }
+    if (notes.length === 0) {
+      parts.push({ name: track.name, plugin, peakDb: null, rmsDb: null, warnings: ['the part has no notes'] })
+      continue
+    }
+    const out = makeScratch(track)
+    try {
+      const stem = await renderVstStem(track, { sampleRate: rate, durationSec: total, out, timeoutMs })
+      for (let ch = 0; ch < 2; ch++) {
+        const source = stem.channels[ch]
+        for (let i = 0; i < frames; i++) mixed[ch][i] += source[i]
+      }
+      parts.push({ name: track.name, plugin, peakDb: stem.peakDb, rmsDb: stem.rmsDb, warnings: stem.warnings })
+    } catch (error) {
+      errors.push({ name: track.name, plugin, message: error.message, code: error.code ?? 'VST_ERROR' })
+      await rm(out, { force: true }).catch(() => {})
     }
   }
   return { channels: mixed, frames, parts, errors }

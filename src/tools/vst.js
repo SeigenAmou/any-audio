@@ -10,13 +10,14 @@
 // SoundFont render: it can be mixed, faded, cut and re-rendered per track, and
 // nothing downstream needs to know it came from a plugin.
 
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { parseWav, toDb } from '../audio/wav.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
 import { readConfig } from '../config.js'
-import { describeVst, renderVst, scanVstLibrary, vstStatus } from '../audio/vst-host.js'
+import { describeVst, isVst2Plugin, renderVst, renderVst2, scanVstLibrary, vstStatus } from '../audio/vst-host.js'
+import { encodeMidiFile } from '../audio/midi-file.js'
 import { findPreset, listPresets, presetDir, removePreset, savePreset } from '../audio/vst-preset.js'
 import {
   deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace,
@@ -162,8 +163,18 @@ export const vstToolDefinition = finalizeTool({
     },
     render: textRenderer((args, value) => {
       if (value.action === 'scan') {
-        const rows = (value.plugins ?? []).map((entry) => `- ${entry.name} — ${entry.path}`)
-        return [`${value.count} plugin(s) found${value.count > rows.length ? ` (showing ${rows.length})` : ''}`, ...rows].join('\n')
+        const rows = (value.plugins ?? []).map((entry) => {
+          const tags = [
+            entry.format === 'vst2' ? 'VST2' : entry.format === 'vst3' ? 'VST3' : null,
+            entry.category === 'instrument' ? 'synth' : entry.category === 'effect' ? 'effect' : null,
+            entry.vendor || null,
+          ].filter(Boolean)
+          return `- ${entry.name}${tags.length ? ` [${tags.join(' · ')}]` : ''} — ${entry.path}`
+        })
+        const lines = [`${value.count} plugin(s) found${value.count > rows.length ? ` (showing ${rows.length})` : ''}`, ...rows]
+        if (value.legacy32?.length) lines.push('', value.legacy32Note)
+        if (value.vst2Note) lines.push(value.vst2Note)
+        return lines.join('\n')
       }
       if (value.action === 'info') {
         const names = (value.parameters ?? []).map((entry) => entry.name)
@@ -302,6 +313,7 @@ export const vstToolDefinition = finalizeTool({
         available: status.available,
         python: status.python,
         pedalboard: status.pedalboard ?? null,
+        vst2: status.vst2 ?? null,
         dirs: library.dirs,
         count: matched.length,
         plugins: matched.slice(0, limit),
@@ -309,7 +321,7 @@ export const vstToolDefinition = finalizeTool({
           ? { legacy32: library.legacy32.slice(0, 20), legacy32Note: 'these are 32-bit VST2 plugins; a 64-bit host cannot load them, so they are listed but not playable until a bridge turns them into 64-bit plugins' }
           : {}),
         ...(library.plugins.some((entry) => entry.format === 'vst2')
-          ? { vst2Note: 'VST2 plugins are listed but cannot be rendered here: the offline host loads VST3 only' }
+          ? { vst2Note: 'VST2 plugins render through a second host (dawdreamer): pass the .dll path to action "render" or to a score track, and their CC and pitch-bend events travel with the part' }
           : {}),
       }
     }
@@ -329,13 +341,10 @@ export const vstToolDefinition = finalizeTool({
       presetParams = found.params
     }
     if (!plugin) throw new Error(`${action} needs "plugin": the full path to a .vst3 (get one from action "scan"), or "preset": a saved patch`)
-    if (/\.dll$/i.test(plugin)) {
-      throw new Error('a VST2 .dll cannot be rendered here: the offline host loads VST3 only. The scan still lists it so it can be found, but playing it needs a host that speaks VST2.')
-    }
 
     if (action === 'info') {
       const info = await describeVst(plugin)
-      return { ok: true, action, plugin, instrument: info.instrument, parameters: info.parameters }
+      return { ok: true, action, plugin, instrument: info.instrument, format: info.format ?? 'vst3', parameters: info.parameters }
     }
 
     if (action !== 'render') throw new Error(`unknown action "${action}"; use scan, info, render or status`)
@@ -368,11 +377,32 @@ export const vstToolDefinition = finalizeTool({
     await mkdir(dirname(target), { recursive: true })
     const warnings = []
     let rendered
+    // A VST2 .dll goes through its own host, which plays a MIDI file rather
+    // than a note list — so the part is written out as SMF, carrying whatever
+    // CC and pitch-bend events the score put on it.
+    const vst2 = isVst2Plugin(plugin)
+    const midiPath = vst2 ? `${target}.mid` : null
     try {
-      rendered = await renderVst({ plugin, notes, params, durationSec, sampleRate, out: target })
+      if (vst2) {
+        // The tool's note list is [start, dur, midi, velocity]; the SMF writer
+        // wants {start, duration, midi, velocity}, so convert rather than pass
+        // the raw rows through (undefined times would collapse every note to
+        // tick 0 and render silence).
+        const part = {
+          name: track?.name ?? friendlyName(plugin),
+          channel: 0,
+          notes: notes.map(([start, duration, midi, velocity]) => ({ start, duration, midi, velocity })),
+        }
+        await writeFile(midiPath, encodeMidiFile({ tracks: [part] }, { bpm: 120, title: part.name }))
+        rendered = await renderVst2({ plugin, midiPath, params, durationSec, sampleRate, out: target })
+      } else {
+        rendered = await renderVst({ plugin, notes, params, durationSec, sampleRate, out: target })
+      }
     } catch (error) {
       error.message = `${error.message}\n(plugin: ${plugin})`
       throw error
+    } finally {
+      if (midiPath) await rm(midiPath, { force: true }).catch(() => {})
     }
     if (rendered.warnings?.length) warnings.push(...rendered.warnings)
 
