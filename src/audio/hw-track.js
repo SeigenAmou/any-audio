@@ -324,7 +324,15 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       timeoutMs: timeoutMs ?? Math.round((captureFrames / sampleRate) * 1000) + 60000,
     })
     const capture = reply.capture ?? {}
-    if (capture.silent) {
+    // A device index is a moving target: USB replugs and driver updates renumber
+  // inputs, and a fresh index can point at an unrelated device that records
+  // nothing. Say that plainly instead of failing later on an empty wav.
+  if (!capture.frames || capture.frames <= 0) {
+    throw new Error(
+      `the input "${capture.device ?? device}" delivered no frames. Device indexes shift when USB is replugged; pass the input name instead ("anyaudio_record action \"devices\"" lists them).`,
+    )
+  }
+  if (capture.silent) {
       warnings.push(
         `the module sent nothing back through "${capture.device ?? device}". `
         + 'Check that the capture input really hears it (an ASIO driver can hold the input exclusively), '

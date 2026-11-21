@@ -139,7 +139,11 @@ def open_capture(sd, device, channels=None, samplerate=None):
     chunks = []
 
     def callback(indata, frames, time_info, status):  # noqa: ARG001
-        chunks.append((float(time_info.inputBufferAdcTime), indata.copy()))
+        # PortAudio does not always fill inputBufferAdcTime (some WASAPI builds
+        # leave it None); the wall clock keeps the take usable instead of
+        # killing the stream mid-recording.
+        adc = time_info.inputBufferAdcTime
+        chunks.append((float(adc) if adc is not None else time.perf_counter(), indata.copy()))
 
     stream = sd.InputStream(samplerate=rate, channels=channel_count, dtype="float32",
                             device=index, callback=callback, extra_settings=extra)
@@ -193,7 +197,9 @@ def stream_time(stream):
     """
     value = stream.time
     if isinstance(value, (tuple, list)):
-        return float(value[0])
+        value = value[0]
+    if value is None:
+        return time.perf_counter()
     return float(value)
 
 
