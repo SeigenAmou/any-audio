@@ -310,12 +310,22 @@ export async function renderMixWithParts(compiled, {
   makeScratch,
   timeoutMs,
   onHwPart,
+  hwKeepCaptures = false,
+  onHwCapture = null,
 } = {}) {
   const rate = sampleRate ?? compiled.sampleRate ?? 48000
   const total = Math.max(0.1, Number.isFinite(durationSec) ? durationSec : compiled.durationSec)
   const frames = Math.ceil(total * rate)
   const vst = await renderVstTracks(compiled, { sampleRate: rate, durationSec: total, makeScratch, timeoutMs })
-  const hw = await renderHwTracks(compiled, { sampleRate: rate, durationSec: total, makeScratch, timeoutMs, onPart: onHwPart })
+  const hw = await renderHwTracks(compiled, {
+    sampleRate: rate,
+    durationSec: total,
+    makeScratch,
+    timeoutMs,
+    onPart: onHwPart,
+    keepCaptures: hwKeepCaptures,
+    onCapture: onHwCapture,
+  })
   // A score made only of outside parts has no SoundFont half to render, and
   // asking `renderCompiled` for one would throw on the empty bank list.
   const hasFontPart = compiled.tracks.some((track) => !(track.vst && track.vst.plugin) && !track.hw)

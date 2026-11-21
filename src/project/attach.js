@@ -259,6 +259,7 @@ export async function attachMaterialFile(workspaceRoot, projectId, sourcePath, {
   fadeOutSec = 0,
   peakDb,
   rmsDb,
+  origin,
   note,
   library,
   remote,
@@ -296,6 +297,7 @@ export async function attachMaterialFile(workspaceRoot, projectId, sourcePath, {
       // of making the import walk them again (improvement plan 03, I-36).
       peakDb,
       rmsDb,
+      origin,
     })
     material = imported.material
   }

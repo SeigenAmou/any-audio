@@ -99,8 +99,8 @@ function fitChannels(channels, frames) {
  * path; it is removed before returning. The call takes as long as the music
  * does — there is no way to ask a module to render faster.
  */
-export async function renderHwStem(track, { sampleRate = 48000, durationSec, out, timeoutMs } = {}) {
-  if (!out) throw new Error(`renderHwStem needs an output path for "${track.name}"`)
+export async function renderHwStem(track, { sampleRate = 48000, durationSec, out, timeoutMs, keepCapture = false, fromPath = null } = {}) {
+  if (!out && !fromPath) throw new Error(`renderHwStem needs an output path for "${track.name}"`)
   const port = track.hw?.port
   if (!port) throw new Error(`track "${track.name}" is not a hardware part`)
   const frames = Math.max(1, Math.ceil((Number.isFinite(durationSec) ? durationSec : track.endSec) * sampleRate))
@@ -117,6 +117,31 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
     ? track.hw.latencyMs
     : (Number.isFinite(configuredLatency) ? Math.max(0, configuredLatency) : 0)
   const warnings = []
+  // The mix pass already recorded this part, so a stems pass reads that take
+  // back instead of playing the module a second time. Recording twice doubles
+  // the wall clock on a real module, and on a long score the second take is the
+  // one that comes back empty.
+  if (fromPath) {
+    const reused = parseWav(await readFile(fromPath))
+    const channels = fitChannels(reused.channels, frames)
+    const mixGain = Number.isFinite(track.mixGain) ? track.mixGain : 1
+    if (mixGain !== 1) {
+      for (const channel of channels) for (let i = 0; i < channel.length; i++) channel[i] *= mixGain
+    }
+    if (reused.frames !== frames) {
+      warnings.push(`the capture was ${reused.frames} frames instead of ${frames}; padded or trimmed to fit`)
+    }
+    return {
+      channels,
+      frames,
+      peakDb: toDb(peakOf(channels)),
+      rmsDb: toDb(rmsOf(channels)),
+      port,
+      device,
+      latencyMs,
+      warnings,
+    }
+  }
   // How many notes a module answers is a property of the module, not of the
   // format: an SD-20 answers 64 voices, an XV-5080 or SC-88 answers 128. Never
   // assume one; check only when the part says how many it has.
@@ -179,7 +204,7 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       warnings,
     }
   } finally {
-    await rm(out, { force: true })
+    if (!keepCapture) await rm(out, { force: true })
   }
 }
 
@@ -188,7 +213,7 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
  * reported and skipped — the rest of the score still renders, and a person is
  * told which wire to check.
  */
-export async function renderHwTracks(compiled, { sampleRate, durationSec, makeScratch, timeoutMs, onPart } = {}) {
+export async function renderHwTracks(compiled, { sampleRate, durationSec, makeScratch, timeoutMs, onPart, keepCaptures = false, onCapture = null } = {}) {
   const tracks = hwTracksOf(compiled)
   if (tracks.length === 0) return null
   const rate = sampleRate ?? compiled.sampleRate ?? 48000
@@ -200,7 +225,9 @@ export async function renderHwTracks(compiled, { sampleRate, durationSec, makeSc
   for (const track of tracks) {
     try {
       if (onPart) onPart(track)
-      const stem = await renderHwStem(track, { sampleRate: rate, durationSec: total, out: makeScratch(track), timeoutMs })
+      const capturePath = makeScratch(track)
+      const stem = await renderHwStem(track, { sampleRate: rate, durationSec: total, out: capturePath, timeoutMs, keepCapture: keepCaptures })
+      if (keepCaptures && onCapture) onCapture(track.name, capturePath)
       for (let ch = 0; ch < 2; ch++) {
         const source = stem.channels[ch]
         for (let i = 0; i < frames; i++) mixed[ch][i] += source[i]

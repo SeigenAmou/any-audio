@@ -173,7 +173,19 @@ function Clip({ item, track, peaks, scale, height, selected, preview, audible = 
   )
 }
 
-function TrackHead({ track, active, audible = true, height, headWidth = HEAD_WIDTH, levelDb = null, surface = '#ffffff', onSelect, onEdit }) {
+function originLabel(origin) {
+  if (!origin) return null
+  if (origin.kind === 'vst') {
+    const name = String(origin.plugin ?? '').replace(/\.(dll|vst3)$/i, '')
+    return { short: 'VST', text: origin.preset ? `${name} · ${origin.preset}` : name, title: t('插件声部：{0}', origin.path ?? name) }
+  }
+  if (origin.kind === 'hw') return { short: 'HW', text: String(origin.port ?? ''), title: t('硬件音源声部：{0}', origin.device ?? origin.port ?? '') }
+  if (origin.kind === 'font') return { short: 'FONT', text: String(origin.instrument ?? t('音色库')), title: t('SoundFont 声部') }
+  if (origin.kind === 'mix') return { short: 'MIX', text: t('多声部混音'), title: t('多声部混音') }
+  return { short: String(origin.kind ?? '').toUpperCase(), text: '', title: '' }
+}
+
+function TrackHead({ track, active, audible = true, height, headWidth = HEAD_WIDTH, levelDb = null, origin = null, surface = '#ffffff', onSelect, onEdit }) {
   const [name, setName] = useState(track.name)
   const [editing, setEditing] = useState(false)
 
@@ -263,17 +275,32 @@ function TrackHead({ track, active, audible = true, height, headWidth = HEAD_WID
     },
       h('span', null, levelDb === null ? t('电平未知') : `${levelDb.toFixed(1)} dBFS`),
       levelDb !== null ? h('span', { style: { color: C.muted } }, t('素材')) : null,
+      (() => {
+        const tag = originLabel(origin)
+        // The origin sits at the end of the level row: it answers "which
+        // instrument is this" without taking a row from the waveform.
+        return tag && tag.short
+          ? h('span', {
+            title: tag.title || tag.text,
+            style: {
+              marginLeft: 'auto', padding: '0 3px', borderRadius: 3,
+              border: `1px solid ${C.border}`, color: C.muted, fontSize: 8,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 76,
+            },
+          }, `${tag.short} ${tag.text}`.trim())
+          : null
+      })(),
     ),
   )
 }
 
-function TrackRow({ track, peaksById, scale, active, headWidth, audible = true, levelDb = null, surface, onSelect, onEdit, drag, selection, onClipPointerDown, onClipSelect, range, onRangeStart }) {
+function TrackRow({ track, peaksById, scale, active, headWidth, audible = true, levelDb = null, origin = null, surface, onSelect, onEdit, drag, selection, onClipPointerDown, onClipSelect, range, onRangeStart }) {
   const height = TRACK_HEIGHT
   const band = range && range.trackId === track.id && range.toSec > range.fromSec
   return h('div', {
     style: { display: 'flex', borderBottom: `1px solid ${C.border}` },
   },
-    h(TrackHead, { track, active, audible, height, headWidth, levelDb, surface, onSelect, onEdit }),
+    h(TrackHead, { track, active, audible, height, headWidth, levelDb, origin, surface, onSelect, onEdit }),
     h('div', { style: { position: 'relative', height, flex: 1, overflow: 'hidden' }, 'data-track-body': true },
       track.items.map((item) => h(Clip, {
         key: item.id,
@@ -325,6 +352,20 @@ export function Timeline({ root, projectId, project, materials, transport, onEdi
   const levelByMaterial = new Map(
     (materials ?? []).map((material) => [material.id, typeof material.rmsDb === 'number' ? material.rmsDb : null]),
   )
+  // What each track was made with (a hosted plugin, a hardware module, or the
+  // SoundFont engine). A stem records it on its material, so the head can say
+  // "VST · JUNO-106" instead of leaving seven identically named tracks to guess
+  // from (I-45).
+  const originByMaterial = new Map(
+    (materials ?? []).map((material) => [material.id, material.source?.origin ?? null]),
+  )
+  const trackOrigin = (track) => {
+    for (const item of track.items ?? []) {
+      const origin = originByMaterial.get(item.material)
+      if (origin) return origin
+    }
+    return null
+  }
   const trackLevel = (track) => {
     let loudest = null
     for (const item of track.items ?? []) {
@@ -645,6 +686,7 @@ export function Timeline({ root, projectId, project, materials, transport, onEdi
             headWidth,
             audible: audibleByTrack.get(track.id) !== false,
             levelDb: trackLevel(track),
+            origin: trackOrigin(track),
             active: track.id === activeTrackId,
             onSelect: () => setActiveTrackId(track.id),
             onEdit: (request) => onEdit?.({ ...request, trackId: track.id }),

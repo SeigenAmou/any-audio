@@ -12,6 +12,27 @@ import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
 import { deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace, requireProjectId, resolveOutputPath, scratchPath, seconds as clampSeconds, textRenderer, workspaceRootOf, writeWavFile } from './shared.js'
 
+/**
+ * What made this part: the hosted plugin, the hardware module, or the font.
+ *
+ * A stem carries it into the project so the clip bay can say "VST · JUNO-106"
+ * on the track head instead of leaving a person to remember which of seven
+ * identically named stems came from the plugin they just opened.
+ */
+function originOf(track, layout) {
+  if (track.vst) {
+    return {
+      kind: 'vst',
+      plugin: basename(track.vst.plugin),
+      path: track.vst.plugin,
+      preset: track.vst.preset ?? null,
+    }
+  }
+  if (track.hw) return { kind: 'hw', port: track.hw.port, device: track.hw.captureDevice ?? null }
+  const program = layout?.get(track.name)
+  return { kind: 'font', instrument: track.instrument ?? null, program: program?.program ?? null }
+}
+
 /** `midi:` is the read that anyaudio_midi action "import" does, without the round trip through a .json file: a .mid is already an arrangement, so hand it straight to the renderer. */
 export async function scoreFromMidiPath(value, workspaceRoot) {
   const text = typeof value === 'string' ? value.trim() : ''
@@ -212,6 +233,11 @@ export const musicToolDefinition = finalizeTool({
     const makeVstScratch = () => scratchPath(workspaceRoot, `vst-${nowStamp()}-${vstScratch++}.wav`)
     const vstParts = vstTracksOf(compiled)
     const hwParts = hwTracksOf(compiled)
+    // A stems render would otherwise play every hardware module twice — once for
+    // the mix, once for the stem — and on a long score that second recording is
+    // the one that comes back empty. The mix pass keeps its capture and the stem
+    // pass reads that take back.
+    const hwCaptures = new Map()
     const rendered = (vstParts.length > 0 || hwParts.length > 0)
       ? await renderMixWithParts(compiled, {
         soundFontOptions: { banks: plan.banks, layout: plan.layout },
@@ -220,6 +246,8 @@ export const musicToolDefinition = finalizeTool({
         peakDb,
         normalize,
         makeScratch: makeVstScratch,
+        hwKeepCaptures: args.stems === true,
+        onHwCapture: (name, path) => hwCaptures.set(name, path),
       })
       : await renderScore(compiled, { banks: plan.banks, layout: plan.layout, sampleRate, durationSec, peakDb, normalize })
     const written = await writeWavFile(target, rendered.channels, sampleRate)
@@ -281,7 +309,12 @@ export const musicToolDefinition = finalizeTool({
       renderOne: (track) => track.vst
         ? renderVstStem(track, { sampleRate, durationSec, out: makeVstScratch() })
         : track.hw
-          ? renderHwStem(track, { sampleRate, durationSec, out: makeVstScratch() })
+          ? renderHwStem(track, {
+            sampleRate,
+            durationSec,
+            out: makeVstScratch(),
+            fromPath: hwCaptures.get(track.name) ?? null,
+          })
           : renderScore(compiled, {
             banks: plan.banks, layout: plan.layout, sampleRate, durationSec, normalize: false, onlyTrack: track.name,
           }),
@@ -312,6 +345,7 @@ export const musicToolDefinition = finalizeTool({
               // would only reproduce it.
               peakDb: Number.isFinite(level.peakDb) ? Number(level.peakDb.toFixed(2)) : null,
               rmsDb: Number.isFinite(level.rmsDb) ? Number(level.rmsDb.toFixed(3)) : null,
+              origin: originOf(track, plan.layout),
             })
             stemFiles.push(attached)
             // What the reply names is the copy the project owns and the clip bay
@@ -325,6 +359,9 @@ export const musicToolDefinition = finalizeTool({
         }
         : null,
     })
+    // The captures the mix pass kept for the stems have been read by now; they
+    // are scratch, so they go with the stem files.
+    for (const kept of hwCaptures.values()) await rm(kept, { force: true })
 
     // A score with stems goes into the project stem by stem (spec §5.3), so a
     // person can rebalance the instruments. A plain render is one track.
@@ -339,6 +376,9 @@ export const musicToolDefinition = finalizeTool({
         tool: 'anyaudio_music',
         label: String(score.title ?? '').trim() || '音乐',
         startSec: args.startSec,
+        // A mixdown is several parts at once, so it records them all rather
+        // than pretending it came from one instrument.
+        origin: { kind: 'mix', parts: compiled.tracks.map((track) => originOf(track, plan.layout)) },
         exec,
       })]
 

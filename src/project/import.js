@@ -287,7 +287,7 @@ export async function importFile(workspaceRoot, projectId, sourcePath, { findFfm
  * internal format). The caller supplies the creation snapshot contents.
  */
 export async function importGeneratedMaterial(workspaceRoot, projectId, {
-  sourcePath, kind, snapshotKind, snapshot, tool, label, peakDb, rmsDb,
+  sourcePath, kind, snapshotKind, snapshot, tool, label, peakDb, rmsDb, origin,
 }) {
   const dir = projectDir(workspaceRoot, projectId)
   await assertReadableFile(sourcePath)
@@ -322,7 +322,11 @@ export async function importGeneratedMaterial(workspaceRoot, projectId, {
     // import measures only when it was given none (improvement plan 03, I-36).
     peakDb: peakDb === undefined ? analysis.peakDb : peakDb,
     rmsDb: rmsDb === undefined ? analysis.rmsDb : rmsDb,
-    source: { kind: 'generated', snapshot: snapshotRel, tool: tool ?? null, label: label ?? null },
+    // `origin` says what made the sound — a hosted VST, a hardware module, or
+    // the SoundFont engine. Playing the file does not need it, but the clip bay
+    // shows it on the track head so a person can tell which stem came from
+    // which instrument (I-45).
+    source: { kind: 'generated', snapshot: snapshotRel, tool: tool ?? null, label: label ?? null, origin: origin ?? null },
   })
   return { material, peaks: peaksRel }
 }
