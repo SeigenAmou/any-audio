@@ -269,6 +269,7 @@ function FontsTab({ state, reload, notify }) {
     ),
     h(VstDirsCard, { state, reload, notify }),
     h(ExternalRigsCard, { state, reload, notify }),
+    h(PresetLibraryCard, { notify }),
   )
 }
 
@@ -393,6 +394,102 @@ function VstDirsCard({ state, reload, notify }) {
  * and the measured latency arrive together. `voices` is the module's polyphony,
  * which the renderer uses to warn when a chord asks for more notes than it has.
  */
+/**
+ * Presets the plugin's own window saved. An agent cannot turn a knob that a
+ * plugin keeps to itself, so the person tunes the sound in their host, saves
+ * it, and a score names that file instead. Grouped by plugin on purpose: two
+ * plugins both offer "Bright Piano", and a flat list would blur them together.
+ */
+function PresetLibraryCard({ notify }) {
+  const [data, setData] = useState(null)
+  const [busy, setBusy] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api('/vst/presets'))
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }, [notify])
+
+  useEffect(() => { void load() }, [load])
+
+  const registered = data?.registered?.presets ?? []
+  const scanned = data?.scanned?.files ?? []
+  const taken = new Set(registered.filter(row => row.state?.path).map(row => String(row.state.path).toLowerCase()))
+
+  const groups = useMemo(() => {
+    const out = new Map()
+    const push = (key, row) => {
+      if (!out.has(key)) out.set(key, [])
+      out.get(key).push(row)
+    }
+    for (const row of registered) push(row.pluginName || t('未标明插件'), { kind: 'registered', row })
+    for (const row of scanned) {
+      if (taken.has(String(row.file).toLowerCase())) continue
+      const label = row.plugin || t('未标明插件')
+      push(row.vendor ? `${label} · ${row.vendor}` : label, { kind: 'scanned', row })
+    }
+    return [...out.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [registered, scanned, data])
+
+  // A file the plugin window saved is already a sound; importing it only names
+  // it so a score can point at it. Two files called "Bright Piano" under the
+  // same plugin need distinct names, so the second becomes "Bright Piano 2".
+  const doImport = async (row) => {
+    const base = row.name || 'preset'
+    const used = registered.filter(other => String(other.name).toLowerCase().startsWith(base.toLowerCase())).length
+    const name = used ? `${base} ${used + 1}` : base
+    setBusy(row.file)
+    try {
+      await api('/vst/presets/import', {
+        method: 'POST',
+        body: { name, file: row.file, plugin: row.plugin || '', note: t('从宿主留下的预设文件导入') },
+      })
+      notify(t('已登记预设「{0}」', name))
+      await load()
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const describe = (entry) => {
+    if (entry.kind === 'registered') {
+      const format = entry.row.state?.format ? String(entry.row.state.format).toUpperCase() : t('参数')
+      return [format, entry.row.note].filter(Boolean).join(' · ')
+    }
+    return `${String(entry.row.format ?? '').toUpperCase()} · ${t('未登记')}`
+  }
+
+  return h(Card, {
+    title: t('插件预设'),
+    desc: t('插件窗口里调好、另存出来的音色文件。按插件分组；Agent 写谱时只写预设名字，文件原样交给插件。'),
+    right: h(Btn, { onClick: () => void load() }, t('重新扫描')),
+  },
+    !data
+      ? h('div', { style: S.desc }, t('正在扫描…'))
+      : groups.length === 0
+        ? h('div', { style: S.desc }, t('没有找到预设文件。在宿主里另存一个 .vstpreset 或 .fxp 即可。'))
+        : h('div', { style: S.list }, groups.map(([label, rows]) => h('div', { key: label, style: { marginBottom: 10 } },
+          h('div', { style: S.label }, t('{0}（{1}）', label, rows.length)),
+          rows.map((entry, index) => h('div', { key: `${label}-${index}`, style: { ...S.row, justifyContent: 'space-between' } },
+            h('div', { style: { minWidth: 0 } },
+              h('div', { style: { ...S.mono, overflow: 'hidden', textOverflow: 'ellipsis' } }, entry.row.name),
+              h('div', { style: S.desc }, describe(entry)),
+            ),
+            entry.kind === 'registered'
+              ? h('span', { style: S.desc }, t('可用'))
+              : h(Btn, { disabled: busy === entry.row.file, onClick: () => void doImport(entry.row) }, busy === entry.row.file ? t('导入中…') : t('导入')),
+          )),
+        ))),
+    data?.scanned?.truncated
+      ? h('div', { style: { ...S.desc, marginTop: 6 } }, t('文件太多，只列出了前面一部分。'))
+      : null,
+  )
+}
+
 function ExternalRigsCard({ state, reload, notify }) {
   const rigs = state?.config?.sources?.external ?? []
   const [draft, setDraft] = useState({ name: '', port: '', device: '', latencyMs: '', voices: '' })

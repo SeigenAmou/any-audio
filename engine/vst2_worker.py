@@ -114,6 +114,19 @@ def main():
             emit({"ok": True, "name": name, "parameters": describe(processor)})
             continue
 
+        if op == "patch":
+            # The plugin's own current values, as the list a .fxp carries. A
+            # caller that wants to write a preset starts from this and changes
+            # only the knobs it means to change.
+            try:
+                raw = processor.get_patch() or []
+                patch = [[int(index), float(value)] for index, value in raw]
+            except Exception as error:
+                emit({"ok": False, "kind": "patch", "error": str(error)[:300]})
+                continue
+            emit({"ok": True, "patch": patch, "count": len(patch)})
+            continue
+
         out = request.get("out")
         if not out:
             emit({"ok": False, "kind": "param", "error": "out is required for render"})

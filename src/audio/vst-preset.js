@@ -11,8 +11,9 @@
 // a piece is written*, a preset records *what it is played on*.
 
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { isVst2Plugin, probeVst2Plugin, readVst2Patch } from './vst-host.js'
 
 export const PRESET_SCHEMA = 2
 
@@ -202,6 +203,83 @@ export async function importPreset({ name, plugin, file, note }) {
     state,
     note: note ?? `imported from ${basename(source)}`,
   })
+}
+
+/**
+ * Write a VST2 program file. The format is small and fully known — a `CcnK`
+ * wrapper around a `FxCk` chunk — so a patch does not have to come from the
+ * plugin's own window: the values can be computed, and the plugin accepts the
+ * result because `load_preset` does not check who wrote it.
+ *
+ * `values` are raw parameter values in the plugin's own range, indexed exactly
+ * like the list `get_patch()` returns.
+ */
+export function encodeFxp({ name = '', values = [] }) {
+  const count = values.length
+  const body = Buffer.alloc(48 + count * 4)
+  body.write('FxCk', 0, 'latin1')
+  body.writeInt32BE(1, 4) // version
+  body.writeInt32BE(0, 8) // fxID — checked by nobody, so zero is honest
+  body.writeInt32BE(1, 12) // fxVersion
+  body.writeInt32BE(count, 16)
+  body.write(String(name).slice(0, 27), 20, 'latin1')
+  for (let index = 0; index < count; index++) {
+    const value = Number(values[index])
+    body.writeFloatBE(Number.isFinite(value) ? value : 0, 48 + index * 4)
+  }
+  const head = Buffer.alloc(8)
+  head.write('CcnK', 0, 'latin1')
+  head.writeInt32BE(body.length, 4)
+  return Buffer.concat([head, body])
+}
+
+/**
+ * Build a .fxp for a 64-bit VST2 plugin: start from the values the plugin
+ * reports, apply the named changes, write the file, and register it.
+ *
+ * `params` is addressed by name because parameter order is not documented
+ * anywhere; a name the plugin does not have is an error, not a silent skip.
+ */
+export async function writeFxpPreset({ name, plugin, params = {}, file, note }) {
+  if (!name || !String(name).trim()) throw new Error('a preset needs a name')
+  if (!plugin || !String(plugin).trim()) throw new Error('writing a VST2 patch needs the plugin path: the .dll it is for')
+  if (!/\.dll$/i.test(String(plugin))) {
+    throw new Error('a .fxp belongs to VST2; write this one from the plugin window and register the .vstpreset instead')
+  }
+  // A .fxp is a VST2 file, so the parameter list has to come from the VST2
+  // host: the pedalboard probe refuses a .dll outright.
+  const probe = isVst2Plugin(plugin)
+    ? await probeVst2Plugin(plugin)
+    : (await probeVstPlugins([plugin]))[0]
+  if (!probe?.ok) throw new Error(`cannot open ${basename(plugin)}: ${probe?.error ?? 'the plugin did not answer'}`)
+  const indexOf = new Map()
+  for (const [index, entry] of (probe.parameters ?? []).entries()) {
+    if (entry?.name) indexOf.set(entry.name, index)
+  }
+  const { patch } = await readVst2Patch(plugin)
+  const values = new Array(patch.length).fill(0)
+  for (const [index, value] of patch) values[index] = value
+  const changed = []
+  for (const [key, value] of Object.entries(params ?? {})) {
+    const index = indexOf.get(String(key))
+    if (index === undefined) {
+      const close = [...indexOf.keys()].filter((item) => item.toLowerCase().includes(String(key).toLowerCase())).slice(0, 5)
+      throw new Error(`"${key}" is not a parameter of ${probe.name || basename(plugin)}${close.length ? `; closest names: ${close.join(', ')}` : ''}`)
+    }
+    values[index] = Number(value)
+    changed.push({ name: String(key), value: Number(value) })
+  }
+  const target = String(file ?? '').trim() || join(presetDir(), `${presetSlug(name)}.fxp`)
+  await mkdir(dirname(target), { recursive: true })
+  await writeFile(target, encodeFxp({ name, values }))
+  const record = await savePreset({
+    name,
+    plugin,
+    params: Object.fromEntries(changed.map((entry) => [entry.name, entry.value])),
+    state: { path: target },
+    note: note ?? `written here: ${changed.length} parameter(s) changed from the plugin's own values`,
+  })
+  return { preset: record, file: target, count: values.length, changed }
 }
 
 // Where the plugins themselves put their presets. A person who saves a patch

@@ -462,6 +462,28 @@ function normalizeState(state) {
   return format ? { path, format } : { path }
 }
 
+/** A VST2 plugin's name and parameter list, asked of the host that loads .dll
+ *  files. The VST3 probe cannot answer this: pedalboard refuses a .dll. */
+export async function probeVst2Plugin(plugin, { timeoutMs = LOAD_TIMEOUT_MS } = {}) {
+  const [reply] = await runVst2Worker([{ op: 'probe', plugin }], { timeoutMs })
+  if (!reply?.ok) {
+    throw new VstHostError(reply?.error ?? `the plugin did not answer: ${plugin}`, { code: 'PROBE_FAILED', kind: reply?.kind ?? 'load' })
+  }
+  return { path: plugin, ok: true, name: reply.name ?? '', parameters: Array.isArray(reply.parameters) ? reply.parameters : [] }
+}
+
+/** The plugin's own current values, as the list a .fxp carries. A caller that
+ *  writes a preset starts from this and changes only what it means to change. */
+export async function readVst2Patch(plugin, { timeoutMs = LOAD_TIMEOUT_MS } = {}) {
+  const [reply] = await runVst2Worker([{ op: 'patch', plugin }], { timeoutMs })
+  if (!reply?.ok) {
+    throw new VstHostError(reply?.error ?? 'the plugin did not report its values', { code: 'PATCH_FAILED', kind: reply?.kind ?? 'patch' })
+  }
+  const patch = Array.isArray(reply.patch) ? reply.patch : []
+  if (!patch.length) throw new VstHostError('the plugin reported no parameters to save', { code: 'PATCH_EMPTY', kind: 'patch' })
+  return { patch, count: patch.length }
+}
+
 export async function renderVst2({ plugin, midiPath, params, state, durationSec, sampleRate = 48000, out, timeoutMs }) {
   if (!midiPath) throw new VstHostError('midiPath must name a MIDI file', { code: 'BAD_INPUT', kind: 'param' })
   if (!out) throw new VstHostError('out must be a WAV path', { code: 'BAD_OUTPUT', kind: 'param' })

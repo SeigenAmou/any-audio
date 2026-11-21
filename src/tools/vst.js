@@ -18,7 +18,7 @@ import { projectDir } from '../project/paths.js'
 import { readConfig } from '../config.js'
 import { describeVst, isVst2Plugin, renderVst, renderVst2, scanVstLibrary, vstStatus } from '../audio/vst-host.js'
 import { encodeMidiFile } from '../audio/midi-file.js'
-import { cleanState, findPreset, importPreset, listPresets, presetDir, removePreset, resolveScorePresets, savePreset, scanPresetFiles } from '../audio/vst-preset.js'
+import { cleanState, findPreset, importPreset, listPresets, presetDir, removePreset, resolveScorePresets, savePreset, scanPresetFiles, writeFxpPreset } from '../audio/vst-preset.js'
 import {
   deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace,
   requireProjectId, scratchPath, textRenderer, workspaceRootOf,
@@ -128,7 +128,7 @@ export const vstToolDefinition = finalizeTool({
       query: { type: 'string', description: 'With action "scan": only list plugins whose name or path contains this text.' },
       output: { type: 'string', description: 'Optional extra copy at this path.' },
       preset: { type: 'string', description: 'A saved patch name (from action "preset"). With action "render" it supplies the plugin path and the parameter values, so "plugin" and "params" can be left out.' },
-      presetAction: { type: 'string', enum: ['save', 'list', 'show', 'remove', 'import', 'scan'], description: 'With action "preset": what to do with the saved patches. Default "list". "import" registers a preset file the plugin itself wrote (.vstpreset, .fxp, .fxb) — the way to reach knobs the plugin keeps out of its parameter list.' },
+      presetAction: { type: 'string', enum: ['save', 'list', 'show', 'remove', 'import', 'scan', 'write'], description: 'With action "preset": what to do with the saved patches. Default "list". "import" registers a preset file the plugin itself wrote (.vstpreset, .fxp, .fxb) — the way to reach knobs the plugin keeps out of its parameter list.' },
       name: { type: 'string', description: 'With action "preset": the patch name to save, show or remove.' },
       note: { type: 'string', description: 'With action "preset": a remark stored next to the patch, e.g. "only the chorus, no reverb".' },
       presetFile: { type: 'string', description: 'With presetAction "import": the .vstpreset, .fxp or .fxb file the plugin saved. With action "render": load that file into the plugin for this one render, without registering it.' },
@@ -213,6 +213,10 @@ export const vstToolDefinition = finalizeTool({
             : `Saved patch "${value.name}" (${value.params} parameter(s)) → ${value.saved}`
         }
         if (value.presetAction === 'import') return `Registered patch "${value.name}" from ${value.state} → ${value.saved}`
+        if (value.presetAction === 'write') {
+          const rows = (value.changed ?? []).map((entry) => `  ${entry.name} = ${entry.value}`)
+          return [`Wrote a .fxp for ${value.name} (${value.count} parameter(s)) → ${value.file}`, ...rows].join('\n')
+        }
         if (value.presetAction === 'remove') return `Removed patch "${value.name}"`
         if (value.presetAction === 'show') {
           const rows = (value.parameters ?? []).map((entry) => `  ${entry.name} = ${entry.value}`)
@@ -264,6 +268,27 @@ export const vstToolDefinition = finalizeTool({
           ...(known.has(entry.file.toLowerCase()) ? { registered: known.get(entry.file.toLowerCase()) } : {}),
         }))
         return { ok: true, action, presetAction: 'scan', ...found, files }
+      }
+      if (early === 'write') {
+        const plugin = String(args.plugin ?? '').trim()
+        if (!plugin) throw new Error('preset write needs "plugin": the 64-bit VST2 .dll the patch is for')
+        const written = await writeFxpPreset({
+          name: String(args.name ?? '').trim(),
+          plugin,
+          params: args.params && typeof args.params === 'object' ? args.params : {},
+          file: String(args.presetFile ?? '').trim(),
+          note: args.note,
+        })
+        return {
+          ok: true,
+          action,
+          presetAction: 'write',
+          name: written.preset.name,
+          id: written.preset.id,
+          file: written.file,
+          count: written.count,
+          changed: written.changed,
+        }
       }
       const sub = String(args.presetAction ?? 'list').trim().toLowerCase() || 'list'
       if (sub === 'list') {

@@ -32,6 +32,7 @@ import { configPath, readConfig, resetConfig, updateConfig } from '../config.js'
 import { findFfmpeg, resolveOutputPath, runFfmpeg } from '../tools/shared.js'
 import { probeVstPlugins, scanVstLibrary } from '../audio/vst-host.js'
 import { extractManualText, listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
+import { importPreset as importVstPreset, listPresets as listVstPresets, scanPresetFiles } from '../audio/vst-preset.js'
 import { handleClipBay, needsClientHeader } from './clipbay-routes.js'
 import { describeError, json, readJsonBody } from './http.js'
 
@@ -907,6 +908,16 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
         return json(res, 400, { ok: false, error: describeError(error) })
       }
     }
+    if (method === 'GET' && path === `${PREFIX}/vst/presets`) {
+      // Two shelves in one reply: the ones a score can already name, and the
+      // files the person's hosts left behind. The page groups both by plugin.
+      try {
+        const [registered, scanned] = await Promise.all([listVstPresets(), scanPresetFiles({ limit: 400 })])
+        return json(res, 200, { ok: true, registered, scanned })
+      } catch (error) {
+        return json(res, 500, { ok: false, error: describeError(error) })
+      }
+    }
     if (method === 'GET' && path === `${PREFIX}/vst/plugins`) {
       try {
         const { config } = await readConfig()
@@ -949,6 +960,19 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
       if (path === `${PREFIX}/manuals/remove`) {
         try {
           return json(res, 200, { ok: true, ...removeManual(body.name) })
+        } catch (error) {
+          return json(res, 400, { ok: false, error: describeError(error) })
+        }
+      }
+      if (path === `${PREFIX}/vst/presets/import`) {
+        try {
+          const saved = await importVstPreset({
+            name: body.name,
+            plugin: body.plugin,
+            file: body.file,
+            note: body.note,
+          })
+          return json(res, 200, { ok: true, preset: saved })
         } catch (error) {
           return json(res, 400, { ok: false, error: describeError(error) })
         }
