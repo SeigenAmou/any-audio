@@ -192,6 +192,7 @@
 用户想自己改谱、想在 DAW 里换音色、或者手里已经有一首 .mid 想拿来当草稿时，用 `anyaudio_midi`：
 
 - `action:"export"`：把 score 写成标准 MIDI 文件（默认落到 `.anyaudio/out/<标题>-<时间>.mid`）。也可以直接在 `anyaudio_music` 上写 `midi: true`，渲染音频的同时顺手把编排导出，省一次调用。
+- **`.mid` 可以直接渲染，不必先转成 score**：`anyaudio_music {projectId, midiFile:"some.mid"}` 内部做的是和 `action:"import"` 一样的读入，然后照常渲染。别同时给 `score` 和 `midiFile`（会报错）；`midi` 是另一个开关，表示「顺便把这次编曲导出成 .mid」。
 - `action:"import"`：读一个 .mid 回到 score（按 MIDI 通道并轨，通道 10 是鼓，音色名由 program 反查），再交给 `anyaudio_music` 渲染成音频。人手写的一段旋律、别人给的伴奏、旧工程留下的 .mid 都走这条路。
 - `action:"analyze"`：只读地看一首 .mid——速度、拍点、音域、每个声部的音符密度与同时发声数（`maxPolyphony`）、以及对网格的比例。写之前先看，比照着印象猜可靠。
 
