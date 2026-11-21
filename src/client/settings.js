@@ -267,9 +267,7 @@ function FontsTab({ state, reload, notify }) {
         ? t('你选的默认音源：{0}', fonts.configured)
         : t('默认音源：{0}（自动选择）', fonts.defaultPath || t('未安装音源'))),
     ),
-    h(VstDirsCard, { state, reload, notify }),
-    h(ExternalRigsCard, { state, reload, notify }),
-    h(PresetLibraryCard, { notify }),
+    h('div', { style: S.desc }, t('插件目录、插件预设、外部音源都搬到了「插件与音源」这一页；这一页只剩 SoundFont 音源。')),
   )
 }
 
@@ -642,6 +640,237 @@ function ExternalRigsCard({ state, reload, notify }) {
       )
       : null,
   )
+}
+
+/**
+ * The notes a plugin or a module needs before an agent can write for it: which
+ * program is the Rhodes, which controller is ignored, where the licence window
+ * appears. One editor, two owners.
+ */
+function ManualEditor({ name, notify, onClose }) {
+  const [text, setText] = useState('')
+  const [exists, setExists] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [source, setSource] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    api(`/manuals/read?name=${encodeURIComponent(name)}`)
+      .then((reply) => {
+        if (cancelled) return
+        setText(reply.text ?? '')
+        setExists(Boolean(reply.exists))
+      })
+      .catch((error) => notify(error.message, 'error'))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [name, notify])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api('/manuals/save', { method: 'POST', body: { name, text } })
+      setExists(true)
+      notify(t('说明书已保存'))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const importFrom = async () => {
+    const path = source.trim()
+    if (!path) return
+    setImporting(true)
+    try {
+      const reply = await api('/manuals/import', { method: 'POST', body: { name, path } })
+      setText(reply.text ?? '')
+      setExists(true)
+      setSource('')
+      const notes = []
+      if (reply.read !== reply.files) notes.push(t('读到 {0} / {1} 个文件', reply.read, reply.files))
+      if (reply.truncated) notes.push(t('内容过长，已截断'))
+      notify(t('已导入说明书（{0} 字符）{1}', reply.chars ?? 0, notes.length ? '；' + notes.join('；') : ''))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const remove = async () => {
+    if (!window.confirm(t('删除「{0}」的说明书？', name))) return
+    try {
+      await api('/manuals/remove', { method: 'POST', body: { name } })
+      setText('')
+      setExists(false)
+      notify(t('说明书已删除'))
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }
+
+  return h(Card, {
+    title: t('{0} 的说明书', name),
+    desc: t('这个音源怎么用：音色号、控制器、雷区。Agent 写声部之前会先读它。'),
+    right: onClose ? h(Btn, { onClick: onClose }, t('关闭')) : null,
+  },
+    h('div', { style: S.row },
+      h(TextInput, {
+        value: source,
+        placeholder: t('说明书文件或文件夹，如 D:\\manuals\\SD-20.pdf'),
+        onChange: event => setSource(event.target.value),
+        style: { flex: 1 },
+      }),
+      h(Btn, { disabled: importing || !source.trim(), onClick: () => void importFrom() }, importing ? t('读取中…') : t('从文件/文件夹导入')),
+    ),
+    h('div', { style: S.desc }, t('支持 .txt .md .pdf .docx .html .mhtml；给一个文件夹会把里面的手册合并成一篇。')),
+    loading
+      ? h('div', { style: S.desc }, t('正在读取…'))
+      : h('textarea', {
+        value: text,
+        onChange: event => setText(event.target.value),
+        placeholder: t('例如：program 0 是 Concert Piano，44 是 Strings；不响应 CC64；复音 64。'),
+        style: { minHeight: 180, width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: 13, padding: 8 },
+      }),
+    h('div', { style: S.row },
+      h(Btn, { disabled: saving || loading || !text.trim(), onClick: () => void save() }, saving ? t('保存中…') : t('保存说明书')),
+      exists ? h(Btn, { disabled: saving, onClick: () => void remove() }, t('删除')) : null,
+    ),
+  )
+}
+
+/**
+ * One plugin at a time. The list of sixty instruments is a directory, not a
+ * form: pick one and everything that belongs to it — the presets its window
+ * saved, the notes someone wrote about it — appears underneath. A flat list of
+ * every preset on the machine was the reason this page got long.
+ */
+function PluginWorkbench({ notify }) {
+  const [library, setLibrary] = useState(null)
+  const [presets, setPresets] = useState(null)
+  const [chosen, setChosen] = useState('')
+  const [busy, setBusy] = useState('')
+  const [manual, setManual] = useState(null)
+
+  const load = useCallback(async () => {
+    try {
+      const [lib, pre] = await Promise.all([api('/vst/plugins'), api('/vst/presets')])
+      setLibrary(lib)
+      setPresets(pre)
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }, [notify])
+
+  useEffect(() => { void load() }, [load])
+
+  const plugins = useMemo(() => {
+    const rows = [...(library?.plugins ?? [])]
+    rows.sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    return rows
+  }, [library])
+  const chosenRow = plugins.find(row => row.path === chosen) || null
+
+  const registered = useMemo(() => {
+    const rows = presets?.registered?.presets ?? []
+    if (!chosenRow) return rows
+    return rows.filter(row => row.plugin === chosenRow.path || (chosenRow.name && String(row.pluginName || '').startsWith(chosenRow.name)))
+  }, [presets, chosenRow])
+
+  const scanned = useMemo(() => {
+    if (!chosenRow) return []
+    const name = String(chosenRow.name || '').toLowerCase()
+    const taken = new Set(registered.filter(row => row.state?.path).map(row => String(row.state.path).toLowerCase()))
+    return (presets?.scanned?.files ?? []).filter(row => {
+      if (taken.has(String(row.file).toLowerCase())) return false
+      const plugin = String(row.plugin || '').toLowerCase()
+      return plugin && name && (plugin === name || plugin.includes(name) || name.includes(plugin))
+    })
+  }, [presets, chosenRow, registered])
+
+  const doImport = async (row) => {
+    const base = row.name || 'preset'
+    const used = registered.filter(other => String(other.name).toLowerCase().startsWith(base.toLowerCase())).length
+    const name = used ? `${base} ${used + 1}` : base
+    setBusy(row.file)
+    try {
+      await api('/vst/presets/import', {
+        method: 'POST',
+        body: { name, file: row.file, plugin: chosenRow.path, note: t('从宿主留下的预设文件导入') },
+      })
+      notify(t('已登记预设「{0}」', name))
+      await load()
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  if (!library) return h(Card, { title: t('插件') }, h('div', { style: S.desc }, t('正在扫描插件…')))
+
+  return [
+    h(Card, {
+      title: t('插件'),
+      desc: t('{0} 个插件。选一个，看它的预设与说明书；VST3 与 64 位 VST2 都能渲染。', plugins.length),
+      right: h(Btn, { onClick: () => void load() }, t('重新扫描')),
+    },
+      plugins.length === 0
+        ? h('div', { style: S.desc }, t('没有扫到插件。在「VST 目录」里加一条，标准目录也会自动搜索。'))
+        : h('select', {
+          value: chosen,
+          onChange: event => { setChosen(event.target.value); setManual(null) },
+          style: { width: '100%', padding: '6px 8px', fontFamily: 'inherit', fontSize: 13 },
+        },
+          h('option', { value: '' }, t('选择插件…')),
+          plugins.map(row => h('option', { key: row.path, value: row.path },
+            `${row.name} · ${String(row.format || '').toUpperCase()}${row.category ? ` · ${row.category === 'instrument' ? t('合成器') : t('效果器')}` : ''}${row.vendor ? ` · ${row.vendor}` : ''}`)),
+        ),
+      library?.legacy32?.length
+        ? h('div', { style: { ...S.desc, marginTop: 6 } }, t('另有 {0} 个 32 位插件，64 位宿主加载不了，需要用桥接。', library.legacy32.length))
+        : null,
+    ),
+    chosenRow
+      ? h(Card, {
+        title: t('{0} 的预设', chosenRow.name),
+        desc: t('Agent 在乐谱里只写预设名字，插件自己按文件加载音色。'),
+        right: h(Btn, { onClick: () => setManual(chosenRow.name) }, t('说明书')),
+      },
+        registered.length || scanned.length
+          ? h('div', { style: S.list },
+            registered.map(row => h('div', { key: `r-${row.id}`, style: { ...S.row, justifyContent: 'space-between' } },
+              h('div', { style: { minWidth: 0 } },
+                h('div', { style: { ...S.mono, overflow: 'hidden', textOverflow: 'ellipsis' } }, row.name),
+                h('div', { style: S.desc }, [row.state?.format ? String(row.state.format).toUpperCase() : t('参数卡'), row.note].filter(Boolean).join(' · ')),
+              ),
+              h('span', { style: S.desc }, 'vst: {preset:"' + row.name + '"}'),
+            )),
+            scanned.map(row => h('div', { key: `s-${row.file}`, style: { ...S.row, justifyContent: 'space-between' } },
+              h('div', { style: { minWidth: 0 } },
+                h('div', { style: { ...S.mono, overflow: 'hidden', textOverflow: 'ellipsis' } }, row.name),
+                h('div', { style: S.desc }, `${String(row.format || '').toUpperCase()} · ${t('未登记')}`),
+              ),
+              h(Btn, { disabled: busy === row.file, onClick: () => void doImport(row) }, busy === row.file ? t('导入中…') : t('导入')),
+            )),
+          )
+          : h('div', { style: S.desc }, t('这个插件还没有预设。在它的窗口里调好音色另存一份，这里就能扫到。')),
+      )
+      : null,
+    manual ? h(ManualEditor, { name: manual, notify, onClose: () => setManual(null) }) : null,
+  ]
+}
+
+function InstrumentsTab({ state, reload, notify }) {
+  return [
+    h(VstDirsCard, { state, reload, notify }),
+    h(PluginWorkbench, { notify }),
+    h(ExternalRigsCard, { state, reload, notify }),
+  ]
 }
 
 function TtsTab({ state, reload, notify }) {
@@ -1418,6 +1647,7 @@ function Page() {
 
   const tabs = useMemo(() => ([
     { id: 'sources', label: t('音源'), render: () => h(FontsTab, { state, reload, notify }) },
+    { id: 'instruments', label: t('插件与音源'), render: () => h(InstrumentsTab, { state, reload, notify }) },
     { id: 'fxlib', label: t('音效'), render: () => h(FxLibTab, { state, reload, notify }) },
     { id: 'tts', label: t('配音'), render: () => h(TtsTab, { state, reload, notify }) },
     { id: 'singing', label: t('唱歌'), render: () => h(SingingTab, { state, reload, notify }) },
