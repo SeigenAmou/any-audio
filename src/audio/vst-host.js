@@ -25,7 +25,11 @@ const DEFAULT_VST2_WORKER = resolve(here, '..', '..', 'engine', 'vst2_worker.py'
 // Redirect stubs (3–6 KB files that only point at the real one) are skipped by
 // size; the Virtual Guitarist trees are a user project in progress and are left
 // alone even though they look like ordinary plugins.
-const MIN_PLUGIN_BYTES = 16384
+// A bridged plugin is often a few kilobytes: jBridge and the like publish a
+// forwarding stub that loads the real 32-bit module, and the PE header plus the
+// VSTPluginMain export is what says it is a plugin, not the file size. Only
+// something far too small to be a PE image at all is dropped.
+const MIN_PLUGIN_BYTES = 1024
 const PROTECTED = ['virtual guitarist']
 const MAX_DEPTH = 3
 
@@ -88,6 +92,12 @@ export function vstSearchDirs(configured = []) {
     join(commonProgramFiles(), 'VST2'),
     join(programFiles(), 'VSTPlugins'),
     join(programFiles(), 'Steinberg', 'VSTPlugins'),
+    // jBridge and similar wrappers publish a 64-bit build of every 32-bit
+    // plugin they adopt. A bridged DLL is an ordinary 64-bit VST2 from here on,
+    // so the folder it lands in is worth looking at by default: it is the whole
+    // answer to "can I use my 32-bit plugins" without a 32-bit host of our own.
+    join(programFiles(), 'JBridgePlugins', 'VstPlugins'),
+    join(programFiles(), 'JBridge', 'VstPlugins'),
   ]
   const seen = new Set()
   const dirs = []
