@@ -156,6 +156,16 @@ Three engines, one interface:
 
 MiMo and DeepSeek are both opt-in: saving a key or signing in does not switch the default engine, you choose it explicitly. MiMo's default voice `mimo_default` is resolved by the service cluster and may differ between regions; this version supports normal Open Platform keys only. DeepSeek's key is the one DSH itself signs in with — the plugin never writes or clears it, because removing it would break model access, not just narration.
 
+## VST instruments
+
+A part can name a plugin instead of a SoundFont instrument — a synth for a pad, a sampled piano library, a module the player already owns. The plugin renders in its own process, so a plugin that hangs waiting for a licence window costs one part instead of the whole render.
+
+- **VST3** goes through pedalboard, **64-bit VST2** through dawdreamer. 32-bit plugins are listed but refused: a 64-bit host cannot load them, and bridging them is the player's choice.
+- **Settings → AnyAudio → Sound sources** holds the folders to scan and lists what the scan found (name, VST2/VST3, synth or effect, vendor). A scan reads the PE header of a `.dll` instead of guessing from the extension.
+- A track sets `"vst": {"plugin": "C:\\...\\Thing.vst3", "params": {"cutoff": 0.4}}`, or points at a registered preset with `"vst": {"preset": "warm-pad"}`.
+- **A patch the plugin keeps to itself.** Plugins whose sound lives behind their own editor cannot be tuned parameter by parameter, so the player saves the patch in a DAW and hands over the file: `anyaudio_vst {action:"preset", presetAction:"import", name:"warm-pad", plugin:"…", presetFile:"C:\\Users\\me\\Documents\\VST3 Presets\\…\\warm-pad.vstpreset"}`, after which the score only says `"vst": {"preset": "warm-pad"}`. The file is handed to the plugin as it is, never parsed. `.vstpreset` belongs to VST3, `.fxp` and `.fxb` to VST2. `presetAction:"scan"` lists the patches already sitting under the usual preset folders.
+- **The two bridges hear different things.** A VST2 part is rendered from a MIDI file, so `automation` controllers and the gestures in `expression` reach the plugin. A VST3 part is rendered from an audio buffer only: parameters and preset files are the ways in, and anything MIDI-shaped stays unheard.
+
 ## Singing
 
 The singing tool synthesises a real vocal on this machine from notes and lyrics and drops it onto its own vocal track in the clip bay — audition it, adjust its level, regenerate any line. The agent calls it automatically on singing requests; no need to name the tool.
@@ -181,7 +191,7 @@ Measured speed: a three-minute song takes about 247 s on CPU and about 28.5 s on
 - **Project size caps** — a project is at most 15 minutes long and 20 tracks wide; going past either is an error.
 - **Audio only, for now** — a video can sit in the project as a reference picture, but this version does not trim, join or transition it.
 - **Tracks hold finished audio** — every clip on the timeline is an already-rendered wav/mp3 that can be auditioned on its own; MIDI, scores and parameters never go on the timeline.
-- **SoundFont only** — no SFZ, Kontakt or VST; converting other source formats is out of scope for this version.
+- **SoundFont and hosted VST only** — VST3 and 64-bit VST2 can be rendered; 32-bit plugins, SFZ and Kontakt libraries cannot, and converting other source formats is out of scope for this version.
 - **No per-note envelope control** — attack and release come from the preset; use short notes with gaps for staccato and velocity plus expression for dynamics.
 - **Chinese instruments are GM approximations** — `guzheng` maps to Koto, `dizi` to Flute, `erhu` to Fiddle; dedicated banks will do better.
 - **Singing quality depends on the voicebank and tuning** — the plugin only provides the install channel, interface and usage.

@@ -203,7 +203,7 @@ export const vstToolDefinition = finalizeTool({
       }
       if (value.action === 'preset') {
         if (value.presetAction === 'scan') {
-          const rows = (value.files ?? []).map((entry) => `- ${entry.name} · ${entry.vendor ? entry.vendor + ' / ' : ''}${entry.plugin} [${entry.format}]\n    ${entry.file}`)
+          const rows = (value.files ?? []).map((entry) => `- ${entry.name} · ${entry.vendor ? entry.vendor + ' / ' : ''}${entry.plugin} [${entry.format}]${entry.registered ? ` · already registered as "${entry.registered}"` : ''}\n    ${entry.file}`)
           const head = `${value.found} preset file(s) under ${(value.dirs ?? []).join(', ')}${value.truncated ? ' (stopped early — narrow the query)' : ''}`
           return [head, ...rows].join('\n')
         }
@@ -250,7 +250,20 @@ export const vstToolDefinition = finalizeTool({
           query: String(args.presetQuery ?? '').trim(),
           limit: Number.isFinite(Number(args.limit)) && Number(args.limit) > 0 ? Math.min(400, Math.round(Number(args.limit))) : 400,
         })
-        return { ok: true, action, presetAction: 'scan', ...found }
+        // A file the player already handed us should not look new: name the
+        // registered preset next to it, so the next step is "use it", not "import it again".
+        const known = new Map()
+        try {
+          for (const preset of (await listPresets()).presets) {
+            const path = preset?.state?.path
+            if (path) known.set(path.toLowerCase(), preset.name)
+          }
+        } catch {}
+        const files = found.files.map((entry) => ({
+          ...entry,
+          ...(known.has(entry.file.toLowerCase()) ? { registered: known.get(entry.file.toLowerCase()) } : {}),
+        }))
+        return { ok: true, action, presetAction: 'scan', ...found, files }
       }
       const sub = String(args.presetAction ?? 'list').trim().toLowerCase() || 'list'
       if (sub === 'list') {
