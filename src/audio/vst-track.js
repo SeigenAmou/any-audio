@@ -70,7 +70,16 @@ function fitChannels(channels, frames) {
  *  `frames` samples. The scratch file goes away whether or not the read works. */
 async function stemFromRender(track, { out, frames, reply }) {
   try {
-    const parsed = parseWav(await readFile(out))
+    let bytes
+    try {
+      bytes = await readFile(out)
+    } catch (error) {
+      throw new Error(`the plugin host wrote no file for "${track.name}" (${error.code ?? error.message}); the part did not render`, { cause: error })
+    }
+    if (!bytes || bytes.length <= 44) {
+      throw new Error(`the plugin host wrote an empty take for "${track.name}" (${bytes?.length ?? 0} bytes)${reply?.frames === 0 ? ' — it rendered 0 frames' : ''}. Check that the plugin loaded the instrument it needs (a plugin waiting on a licence window answers nothing).`)
+    }
+    const parsed = parseWav(bytes)
     const channels = fitChannels(parsed.channels, frames)
     // `gainDb` means the same thing it means for a SoundFont part; a plugin has
     // no CC7 to carry it, so the equivalent linear gain is applied here.
