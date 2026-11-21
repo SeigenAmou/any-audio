@@ -183,7 +183,7 @@ MIDI 不是音频：它不进工程、不参与混音、`anyaudio://timeline` �
 
 SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声音它给不了——Roland 的 JUNO/JUPITER、TB-303 的滑音、SRX 的采样乐器。本机装了 VST3 时，可以直接让这些插件出声。
 
-先 `action:"status"`：它告诉你 Python 与 pedalboard 在不在（不在就告诉用户装一下，别自己 pip install）。然后 `action:"scan"` 列出能加载的插件（已经滤掉 3–6KB 的重定向桩和授权不明的替身文件）。扫描认得两种格式：**VST3** 与 **64 位 VST2**（`.dll`，靠读 PE 头与导出表判断，不是看扩展名）。**只有 VST3 能渲染**——VST2 会被列出来但播放时会明确报错；32 位 VST2 单独列成 `legacy32`，那是 64 位宿主加载不了的，要靠用户自己做桥接。扫描结果里的厂商与「合成器/效果器」两类信息多数要加载插件才能拿到（单文件 bundle 里没有 moduleinfo.json），所以设置页上那个「探测类型」按钮是一次性的、可能要等几秒。`action:"info"` 给出某个插件的参数名与原始取值范围，改音色就靠它。
+先 `action:"status"`：它告诉你 Python 与 pedalboard 在不在（不在就告诉用户装一下，别自己 pip install）。然后 `action:"scan"` 列出能加载的插件（已经滤掉 3–6KB 的重定向桩和授权不明的替身文件）。扫描认得两种格式：**VST3** 与 **64 位 VST2**（`.dll`，靠读 PE 头与导出表判断，不是看扩展名）。**两种都能渲染**：VST3 走 pedalboard，64 位 VST2（`.dll`）走第二个宿主 dawdreamer（`pip install dawdreamer` 一次即可）。VST2 声部是把谱面写成 MIDI 文件再播进去的，所以 CC 与弯音随声部一起走。32 位 VST2 单独列成 `legacy32`，那是 64 位宿主加载不了的，要靠用户自己做桥接。扫描结果里的厂商与「合成器/效果器」两类信息多数要加载插件才能拿到（单文件 bundle 里没有 moduleinfo.json），所以设置页上那个「探测类型」按钮是一次性的、可能要等几秒。`action:"info"` 给出某个插件的参数名与原始取值范围，改音色就靠它。
 
 `action:"render"` 一次渲染一个插件的若干个音：
 
@@ -221,6 +221,16 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 ```
 
 之后乐谱里只写 `{"name":"synth","vst":{"preset":"juno warm pad"},"notes":[[0,4,"C3",100]]}`，插件路径和整块参数都由这张卡补上；轨上再写的 `params` 只覆盖那一颗旋钮，其余仍来自卡。`presetAction:"list"` 看全部，`"show"` 看某一张的参数，`"remove"` 删掉。卡存在 `~/.dsh/anyaudio/vst-presets/`，跟风格卡一样是机器级的——换个项目、换个会话照样能用。名字里有中文不会出问题，重名会自动加 `-2`。
+
+**插件里调好的音色，直接指向它自己的预设文件**。有些东西不在参数表里：Roland 的 SRX 换 patch、合成器的宏旋钮、插件窗格里才有的页面。这些只能由**人在插件自己的窗口里调好、存成文件**（`.vstpreset`、`.fxp`、`.fxb`），然后让 Agent 去加载——
+
+```json
+{"action":"preset","presetAction":"import","name":"srx piano 华丽","plugin":"C:/Program Files/Roland Cloud/SRX PIANO 1/SRX PIANO 1(VST2 64bit).dll","presetFile":"D:/Presets/srx-grand.vstpreset"}
+```
+
+登记之后，乐谱轨写 `{"name":"keys","vst":{"preset":"srx piano 华丽"}}` 就会把那个文件交给插件（先加载文件，再应用轨上显式写的 `params`，所以「预设 + 改一颗旋钮」是成立的）。也可以不登记、一次性用：`render` 时直接传 `presetFile`。
+
+三条要点：①**文件原样交给插件，这边不解析**——它属于插件，改动它是插件的职责；②加载失败不会静音或崩掉，回执的 `warnings` 里写明 `state: …` 是哪一步失败，该声部照常用默认音色渲染；③`.vstpreset` 是 VST3 的格式，`.fxp`/`.fxb` 是 VST2 的，选错了插件会拒绝，报错会告诉你。
 
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 

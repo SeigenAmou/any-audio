@@ -1488,6 +1488,55 @@ await test('a saved patch keeps a plugin and the knobs that made the sound', asy
   }
 })
 
+await test('a patch the plugin saved itself can be registered and reaches the score', async () => {
+  const vst = tools.get('anyaudio_vst')
+  const shelf = join(tmpDir, 'vst-presets-state')
+  const source = join(tmpDir, 'juno-warm.vstpreset')
+  const previous = process.env.ANYAUDIO_VST_PRESET_DIR
+  process.env.ANYAUDIO_VST_PRESET_DIR = shelf
+  try {
+    // The import path never parses the file: it belongs to the plugin, and the
+    // point is to hand it back unchanged. So a header plus filler is enough to
+    // prove the plumbing without needing a licensed plugin in the test suite.
+    await writeFile(source, Buffer.concat([Buffer.from('VST3'), Buffer.alloc(64, 7)]))
+    const imported = await vst.execute({
+      action: 'preset',
+      presetAction: 'import',
+      name: 'juno warm',
+      plugin: 'C:\\Program Files\\Common Files\\VST3\\JUNO-106.vst3',
+      presetFile: source,
+      note: 'made in the plugin window',
+    }, exec)
+    assert(imported.state === source, `the state file is remembered, got ${imported.state}`)
+    assert(imported.format === 'vstpreset', `the format comes from the extension, got ${imported.format}`)
+    const listed = await vst.execute({ action: 'preset' }, exec)
+    assert(listed.presets[0].state === source, 'the list shows which file backs the patch')
+    const { resolveScorePresets } = await import('../src/audio/vst-preset.js')
+    const resolved = await resolveScorePresets({ tracks: [{ name: 'lead', vst: { preset: 'juno warm' } }] })
+    assert(resolved.tracks[0].vst.state.path === source, 'a score track carries the state file')
+    assert(resolved.tracks[0].vst.state.format === 'vstpreset', 'and its format, so the right loader is used')
+    // An explicit state on the track replaces the one from the patch.
+    const overridden = await resolveScorePresets({
+      tracks: [{ name: 'lead', vst: { preset: 'juno warm', state: join(tmpDir, 'other.fxp') } }],
+    })
+    assert(overridden.tracks[0].vst.state.format === 'fxp', 'a track can name its own state file')
+    let empty = null
+    try {
+      await writeFile(join(tmpDir, 'empty.fxp'), '')
+      await vst.execute({ action: 'preset', presetAction: 'import', name: 'gone', presetFile: join(tmpDir, 'empty.fxp') }, exec)
+    } catch (error) {
+      empty = error
+    }
+    assert(empty && /empty/.test(empty.message), 'an empty preset file is refused rather than registered')
+  } finally {
+    if (previous === undefined) delete process.env.ANYAUDIO_VST_PRESET_DIR
+    else process.env.ANYAUDIO_VST_PRESET_DIR = previous
+    await rm(shelf, { recursive: true, force: true })
+    await rm(source, { force: true })
+    await rm(join(tmpDir, 'empty.fxp'), { force: true })
+  }
+})
+
 await test('a score can hand one part to a plugin without stealing a SoundFont channel', async () => {
   const compiled = compileScore({
     title: 'hybrid',

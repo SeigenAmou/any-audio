@@ -133,11 +133,30 @@ def main():
             plugin.reset()
         except Exception:
             pass
+        # A saved state (a .vstpreset the person made in the plugin's own window)
+        # is loaded before the parameter map, so a knob they did tune by number
+        # still wins over whatever the file says.
+        state = request.get("state")
+        if state:
+            state_path = state.get("path") if isinstance(state, dict) else str(state)
+            if state_path:
+                try:
+                    plugin.load_preset(state_path)
+                except Exception as error:
+                    warnings.append("state: " + str(error)[:160])
         for name, value in (request.get("params") or {}).items():
+            # pedalboard 0.9 made .parameters read-only: the documented way to
+            # set one is now an attribute (plugin.cutoff = 0.5). The dictionary
+            # form is kept as a fallback for older builds that only accept that.
             try:
-                plugin.parameters[name] = float(value)
-            except Exception as error:
-                warnings.append(name + ": " + str(error)[:120])
+                setattr(plugin, str(name), float(value))
+                continue
+            except Exception as attribute_error:
+                try:
+                    plugin.parameters[name] = float(value)
+                    continue
+                except Exception:
+                    warnings.append(str(name) + ": " + str(attribute_error)[:120])
 
         try:
             duration = float(request.get("durationSec") or 4.0)

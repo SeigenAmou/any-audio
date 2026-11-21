@@ -10,11 +10,44 @@
 // This is the twin of the style card in style.js: the style card records *how
 // a piece is written*, a preset records *what it is played on*.
 
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, extname, join } from 'node:path'
 import { homedir } from 'node:os'
 
-export const PRESET_SCHEMA = 1
+export const PRESET_SCHEMA = 2
+
+// The file a plugin writes from its own window. This is the only way to reach
+// the knobs a plugin keeps out of its parameter list — a person opens the
+// plugin, turns what they hear, saves it, and a score points at the file.
+const STATE_FORMATS = new Map([
+  ['.vstpreset', 'vstpreset'],
+  ['.fxp', 'fxp'],
+  ['.fxb', 'fxb'],
+])
+
+/** Guess the state format from the file name. Unknown extensions are left
+ *  undefined so the worker falls back to its generic loader. */
+export function stateFormatOf(file) {
+  return STATE_FORMATS.get(String(extname(String(file ?? ''))).toLowerCase()) ?? ''
+}
+
+/** A {path, format} pair, or null when the input says nothing useful. */
+export function cleanState(state) {
+  if (!state) return null
+  if (typeof state === 'string') {
+    const path = state.trim()
+    if (!path) return null
+    const format = stateFormatOf(path)
+    return format ? { path, format } : { path }
+  }
+  if (typeof state !== 'object' || Array.isArray(state)) return null
+  const path = typeof state.path === 'string' ? state.path.trim() : ''
+  if (!path) return null
+  const format = typeof state.format === 'string' && state.format.trim()
+    ? state.format.trim().toLowerCase()
+    : stateFormatOf(path)
+  return format ? { path, format } : { path }
+}
 
 /** Where presets live. `ANYAUDIO_VST_PRESET_DIR` overrides it, which is what
  *  the test suite uses so it never touches the machine-wide shelf. */
@@ -71,6 +104,7 @@ export async function listPresets() {
         plugin: raw.plugin,
         pluginName: raw.pluginName ?? (raw.plugin ? basename(String(raw.plugin)) : ''),
         params: raw.params ?? {},
+        state: cleanState(raw.state),
         note: raw.note ?? '',
         createdAt: raw.createdAt ?? null,
       })
@@ -95,7 +129,7 @@ export async function findPreset(name) {
     ?? null
 }
 
-export async function savePreset({ name, plugin, params, note }) {
+export async function savePreset({ name, plugin, params, state, note }) {
   if (!name || !String(name).trim()) throw new Error('a preset needs a name')
   if (!plugin || !String(plugin).trim()) throw new Error('a preset needs the plugin path it was tuned on')
   const dir = presetDir()
@@ -118,6 +152,7 @@ export async function savePreset({ name, plugin, params, note }) {
     plugin: String(plugin).trim(),
     pluginName: basename(String(plugin).trim()),
     params: cleanParams(params),
+    ...(cleanState(state) ? { state: cleanState(state) } : {}),
     note: String(note ?? '').trim(),
   }
   await writeFile(join(dir, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, 'utf8')
@@ -127,6 +162,7 @@ export async function savePreset({ name, plugin, params, note }) {
     `- 插件：${record.pluginName}`,
     `- 路径：${record.plugin}`,
     `- 参数：${Object.keys(record.params).length} 个`,
+    record.state ? `- 状态文件：${record.state.path}` : '',
     record.note ? `- 说明：${record.note}` : '',
     '',
     '```json',
@@ -137,6 +173,35 @@ export async function savePreset({ name, plugin, params, note }) {
   ].filter((line) => line !== undefined)
   await writeFile(join(dir, `${id}.md`), `${lines.join('\n')}\n`, 'utf8')
   return record
+}
+
+/**
+ * Register a preset file the plugin itself wrote. Nothing is parsed: the file
+ * belongs to the plugin, and handing it back unchanged is the whole point.
+ */
+export async function importPreset({ name, plugin, file, note }) {
+  const source = String(file ?? '').trim()
+  if (!source) throw new Error('importing a preset needs a file: the .vstpreset, .fxp or .fxb the plugin saved')
+  let info
+  try {
+    info = await stat(source)
+  } catch (error) {
+    throw new Error(`cannot read the preset file ${source}: ${error.message}`)
+  }
+  if (!info.isFile()) throw new Error(`${source} is not a file`)
+  if (info.size === 0) throw new Error(`${source} is empty`)
+  const state = cleanState({ path: source })
+  const label = String(name ?? '').trim() || basename(source, extname(source))
+  return savePreset({
+    name: label,
+    // A preset file may be shared by several plugins, and a score track that
+    // points at the preset still needs to say which plugin plays it, so the
+    // plugin stays optional here and is filled in by the caller when missing.
+    plugin: String(plugin ?? '').trim() || 'unknown',
+    params: {},
+    state,
+    note: note ?? `imported from ${basename(source)}`,
+  })
 }
 
 export async function removePreset(name) {
@@ -175,12 +240,14 @@ export async function resolveScorePresets(score) {
     }
     changed = true
     const { preset: _preset, ...rest } = spec
+    const state = cleanState(rest.state) ?? found.state
     resolved.push({
       ...track,
       vst: {
         ...rest,
-        plugin: found.plugin,
+        plugin: found.plugin !== 'unknown' ? found.plugin : rest.plugin,
         params: { ...found.params, ...(rest.params && typeof rest.params === 'object' ? rest.params : {}) },
+        ...(state ? { state } : {}),
       },
     })
   }

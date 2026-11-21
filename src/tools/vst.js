@@ -18,7 +18,7 @@ import { projectDir } from '../project/paths.js'
 import { readConfig } from '../config.js'
 import { describeVst, isVst2Plugin, renderVst, renderVst2, scanVstLibrary, vstStatus } from '../audio/vst-host.js'
 import { encodeMidiFile } from '../audio/midi-file.js'
-import { findPreset, listPresets, presetDir, removePreset, savePreset } from '../audio/vst-preset.js'
+import { cleanState, findPreset, importPreset, listPresets, presetDir, removePreset, savePreset } from '../audio/vst-preset.js'
 import {
   deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace,
   requireProjectId, scratchPath, textRenderer, workspaceRootOf,
@@ -115,7 +115,7 @@ export const vstToolDefinition = finalizeTool({
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['scan', 'info', 'render', 'status', 'preset'], description: 'scan = list installed plugins; info = describe one plugin; render = play notes through one plugin; status = is the Python bridge ready; preset = save/list/show/remove a patch.' },
+      action: { type: 'string', enum: ['scan', 'info', 'render', 'status', 'preset'], description: 'scan = list installed plugins; info = describe one plugin; render = play notes through one plugin; status = is the Python bridge ready; preset = save/list/show/import/remove a patch.' },
       plugin: { type: 'string', description: 'Full path to the .vst3 (from action "scan"). Required for info and render.' },
       notes: { type: 'array', description: 'Notes as [startSec, durSec, midi, velocity, channel?]. Seconds on the clip timeline, midi 0..127, velocity 1..127; channel defaults to 0.', items: { type: 'array', items: { type: 'number' } } },
       score: { oneOf: [{ type: 'object' }, { type: 'string' }], description: 'Alternative to notes: a score object (or .json path) whose first track with notes is played. Useful when the part was already written for anyaudio_music.' },
@@ -128,9 +128,10 @@ export const vstToolDefinition = finalizeTool({
       query: { type: 'string', description: 'With action "scan": only list plugins whose name or path contains this text.' },
       output: { type: 'string', description: 'Optional extra copy at this path.' },
       preset: { type: 'string', description: 'A saved patch name (from action "preset"). With action "render" it supplies the plugin path and the parameter values, so "plugin" and "params" can be left out.' },
-      presetAction: { type: 'string', enum: ['save', 'list', 'show', 'remove'], description: 'With action "preset": what to do with the saved patches. Default "list".' },
+      presetAction: { type: 'string', enum: ['save', 'list', 'show', 'remove', 'import'], description: 'With action "preset": what to do with the saved patches. Default "list". "import" registers a preset file the plugin itself wrote (.vstpreset, .fxp, .fxb) — the way to reach knobs the plugin keeps out of its parameter list.' },
       name: { type: 'string', description: 'With action "preset": the patch name to save, show or remove.' },
       note: { type: 'string', description: 'With action "preset": a remark stored next to the patch, e.g. "only the chorus, no reverb".' },
+      presetFile: { type: 'string', description: 'With presetAction "import": the .vstpreset, .fxp or .fxb file the plugin saved. With action "render": load that file into the plugin for this one render, without registering it.' },
       limit: { type: 'number', description: 'With action "scan": max rows, default 60.' },
     },
     required: ['action'],
@@ -190,13 +191,18 @@ export const vstToolDefinition = finalizeTool({
           : `VST bridge not ready: ${value.error ?? 'unknown'} (run pip install pedalboard for ${value.python})`
       }
       if (value.action === 'preset') {
-        if (value.presetAction === 'save') return `Saved patch "${value.name}" (${value.params} parameter(s)) → ${value.saved}`
+        if (value.presetAction === 'save') {
+          return value.state
+            ? `Saved patch "${value.name}" → ${value.saved} (state file ${value.state})`
+            : `Saved patch "${value.name}" (${value.params} parameter(s)) → ${value.saved}`
+        }
+        if (value.presetAction === 'import') return `Registered patch "${value.name}" from ${value.state} → ${value.saved}`
         if (value.presetAction === 'remove') return `Removed patch "${value.name}"`
         if (value.presetAction === 'show') {
           const rows = (value.parameters ?? []).map((entry) => `  ${entry.name} = ${entry.value}`)
           return [`Patch "${value.name}" on ${value.plugin}`, ...rows].join('\\n')
         }
-        const rows = (value.presets ?? []).map((entry) => `- ${entry.name} — ${entry.pluginName} (${entry.params} parameter(s))${entry.note ? ` · ${entry.note}` : ''}`)
+        const rows = (value.presets ?? []).map((entry) => `- ${entry.name} — ${entry.pluginName} (${entry.params} parameter(s)${entry.state ? `, state ${entry.state}` : ''})${entry.note ? ` · ${entry.note}` : ''}`)
         return [`${value.count} saved patch(es)`, ...rows].join('\\n')
       }
       const lines = [
@@ -236,10 +242,34 @@ export const vstToolDefinition = finalizeTool({
             plugin: entry.plugin,
             pluginName: entry.pluginName,
             params: Object.keys(entry.params).length,
+            ...(entry.state ? { state: entry.state.path } : {}),
             note: entry.note,
             createdAt: entry.createdAt,
           })),
           ...(broken.length ? { warnings: broken.map((entry) => `${entry.file}: ${entry.error}`) } : {}),
+        }
+      }
+
+      if (sub === 'import') {
+        const file = String(args.presetFile ?? args.file ?? '').trim()
+        if (!file) throw new Error('preset import needs "presetFile": the .vstpreset, .fxp or .fxb the plugin saved from its own window')
+        const record = await importPreset({
+          name: String(args.name ?? '').trim(),
+          plugin: String(args.plugin ?? '').trim(),
+          file,
+          note: args.note,
+        })
+        return {
+          ok: true,
+          action,
+          presetAction: sub,
+          id: record.id,
+          name: record.name,
+          plugin: record.plugin,
+          state: record.state.path,
+          format: record.state.format ?? '',
+          note: record.note,
+          saved: relativeToWorkspace(workspaceRoot, join(presetDir(), `${record.id}.json`)),
         }
       }
 
@@ -250,7 +280,8 @@ export const vstToolDefinition = finalizeTool({
         const pluginPath = String(args.plugin ?? '').trim()
         if (!pluginPath) throw new Error('preset save needs "plugin": the .vst3 the patch was tuned on (action "scan" lists them)')
         const params = args.params === undefined ? {} : await readJsonParam(args.params, 'params', { workspaceRoot })
-        const record = await savePreset({ name, plugin: pluginPath, params, note: args.note })
+        const state = cleanState(String(args.presetFile ?? '').trim() || undefined)
+        const record = await savePreset({ name, plugin: pluginPath, params, state, note: args.note })
         return {
           ok: true,
           action,
@@ -259,6 +290,7 @@ export const vstToolDefinition = finalizeTool({
           name: record.name,
           plugin: record.plugin,
           params: Object.keys(record.params).length,
+          ...(record.state ? { state: record.state.path } : {}),
           note: record.note,
           saved: relativeToWorkspace(workspaceRoot, join(presetDir(), `${record.id}.json`)),
         }
@@ -275,6 +307,7 @@ export const vstToolDefinition = finalizeTool({
           name: found.name,
           plugin: found.plugin,
           parameters: Object.entries(found.params).map(([key, value]) => ({ name: key, value })),
+          ...(found.state ? { state: found.state.path, format: found.state.format ?? '' } : {}),
           note: found.note,
           createdAt: found.createdAt,
         }
@@ -286,7 +319,7 @@ export const vstToolDefinition = finalizeTool({
         return { ok: true, action, presetAction: sub, id: gone.id, name: gone.name, removed: true }
       }
 
-      throw new Error(`unknown presetAction "${sub}"; use save, list, show or remove`)
+      throw new Error(`unknown presetAction "${sub}"; use save, list, show, import or remove`)
     }
 
     if (action === 'scan') {
@@ -330,6 +363,7 @@ export const vstToolDefinition = finalizeTool({
     // values given explicitly still win, so one knob can be changed on top of it.
     let plugin = String(args.plugin ?? '').trim()
     let presetParams = null
+    let presetState = null
     if (args.preset !== undefined && String(args.preset).trim()) {
       const found = await findPreset(String(args.preset))
       if (!found) {
@@ -339,7 +373,12 @@ export const vstToolDefinition = finalizeTool({
       }
       if (!plugin) plugin = found.plugin
       presetParams = found.params
+      presetState = found.state ?? null
     }
+    // A file named directly for this one render: the registered patch is for
+    // reuse, this is the "try it once" form.
+    const directState = cleanState(String(args.presetFile ?? '').trim() || undefined)
+    if (directState) presetState = directState
     if (!plugin) throw new Error(`${action} needs "plugin": the full path to a .vst3 (get one from action "scan"), or "preset": a saved patch`)
 
     if (action === 'info') {
@@ -394,9 +433,9 @@ export const vstToolDefinition = finalizeTool({
           notes: notes.map(([start, duration, midi, velocity]) => ({ start, duration, midi, velocity })),
         }
         await writeFile(midiPath, encodeMidiFile({ tracks: [part] }, { bpm: 120, title: part.name }))
-        rendered = await renderVst2({ plugin, midiPath, params, durationSec, sampleRate, out: target })
+        rendered = await renderVst2({ plugin, midiPath, params, state: presetState, durationSec, sampleRate, out: target })
       } else {
-        rendered = await renderVst({ plugin, notes, params, durationSec, sampleRate, out: target })
+        rendered = await renderVst({ plugin, notes, params, state: presetState, durationSec, sampleRate, out: target })
       }
     } catch (error) {
       error.message = `${error.message}\n(plugin: ${plugin})`

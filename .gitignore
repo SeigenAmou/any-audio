@@ -22,3 +22,4 @@ docs/assets/settings-*.png
 docs/*.md
 dsh-image-gen/
 output
+.tmp-*

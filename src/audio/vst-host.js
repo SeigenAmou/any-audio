@@ -450,7 +450,19 @@ export function runVst2Worker(requests, options = {}) {
 /** Render a track through a 64-bit VST2 plugin. dawdreamer plays the whole MIDI
  *  file rather than a note list, so the caller writes one — that also carries
  *  the CC and pitch-bend events a patch may key off. */
-export async function renderVst2({ plugin, midiPath, params, durationSec, sampleRate = 48000, out, timeoutMs }) {
+/** A saved plugin state file. Shape is {path, format}; a bare path string is
+ *  accepted too because it is what a score track usually carries. */
+function normalizeState(state) {
+  if (!state) return undefined
+  if (typeof state === 'string') return state.trim() ? { path: state } : undefined
+  if (typeof state !== 'object') return undefined
+  const path = typeof state.path === 'string' ? state.path.trim() : ''
+  if (!path) return undefined
+  const format = typeof state.format === 'string' ? state.format.trim().toLowerCase() : ''
+  return format ? { path, format } : { path }
+}
+
+export async function renderVst2({ plugin, midiPath, params, state, durationSec, sampleRate = 48000, out, timeoutMs }) {
   if (!midiPath) throw new VstHostError('midiPath must name a MIDI file', { code: 'BAD_INPUT', kind: 'param' })
   if (!out) throw new VstHostError('out must be a WAV path', { code: 'BAD_OUTPUT', kind: 'param' })
   const request = {
@@ -460,6 +472,7 @@ export async function renderVst2({ plugin, midiPath, params, durationSec, sample
     durationSec: Number.isFinite(Number(durationSec)) ? Number(durationSec) : undefined,
     sampleRate,
     params: params && typeof params === 'object' ? params : undefined,
+    state: normalizeState(state),
     out,
   }
   const [reply] = await runVst2Worker([request], { timeoutMs: timeoutMs ?? RENDER_TIMEOUT_MS })
@@ -537,6 +550,7 @@ export async function renderVstBatch(requests, { timeoutMs } = {}) {
     sampleRate: request.sampleRate,
     params: request.params && typeof request.params === 'object' ? request.params : undefined,
     controls: Array.isArray(request.controls) ? request.controls : undefined,
+    state: normalizeState(request.state),
     out: request.out,
   }))
   // The budget grows with the number of parts but stops at ten minutes: a batch
@@ -547,7 +561,7 @@ export async function renderVstBatch(requests, { timeoutMs } = {}) {
 
 /** Render notes through one plugin and write a WAV. `notes` is
  *  [[startSec, durationSec, midi, velocity], …] — the same shape as a score. */
-export async function renderVst({ plugin, notes, controls, params, durationSec, sampleRate = 48000, out, timeoutMs }) {
+export async function renderVst({ plugin, notes, controls, params, state, durationSec, sampleRate = 48000, out, timeoutMs }) {
   if (!Array.isArray(notes) || notes.length === 0) {
     throw new VstHostError('notes must be a non-empty array of [startSec, durationSec, midi, velocity]', { code: 'BAD_NOTES', kind: 'param' })
   }
@@ -560,6 +574,7 @@ export async function renderVst({ plugin, notes, controls, params, durationSec, 
     sampleRate,
     params: params && typeof params === 'object' ? params : undefined,
     controls: Array.isArray(controls) ? controls : undefined,
+    state: normalizeState(state),
     out,
   }
   const [reply] = await runVstWorker([request], { timeoutMs: timeoutMs ?? RENDER_TIMEOUT_MS })

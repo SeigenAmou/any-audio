@@ -124,6 +124,27 @@ def main():
             continue
 
         warnings = []
+        # State first, then parameters: a .fxp or .vstpreset carries the knobs
+        # the plugin's own window exposes, which are exactly the ones a score
+        # cannot reach by name. Anything the caller then sets by name overrides
+        # the file, so one value can be changed on top of a saved patch.
+        state = request.get("state")
+        if state:
+            state_path = state.get("path") if isinstance(state, dict) else str(state)
+            fmt = (state.get("format") if isinstance(state, dict) else "") or ""
+            if state_path:
+                try:
+                    if fmt == "fxp":
+                        accepted = processor.load_preset(state_path)
+                    elif fmt == "vstpreset":
+                        accepted = processor.load_vst3_preset(state_path)
+                    else:
+                        processor.load_state(state_path)
+                        accepted = True
+                    if accepted is False:
+                        warnings.append("state: the plugin refused " + state_path)
+                except Exception as error:
+                    warnings.append("state: " + str(error)[:160])
         # Parameters are addressed by name because a plugin's index order is not
         # documented anywhere; a name this plugin does not have is reported, not
         # silently skipped.
