@@ -13,9 +13,30 @@ An agent-driven audio production toolkit for music, sound effects, narration, an
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4b6bfb.svg)](#安装)
 [![Status](https://img.shields.io/badge/status-early%20release-orange.svg)](#已知限制)
 
-[先听为快](#先听为快) · [剪辑台](#剪辑台) · [安装](#安装) · [音源](#音源) · [语音-tts](#语音-tts) · [唱歌](#唱歌) · [English](https://github.com/cloudoyx/any-audio/blob/main/README.md)
+[先听为快](#先听为快) · [剪辑台](#剪辑台) · [安装](#安装) · [音源](#音源) · [语音-tts](#语音-tts) · [唱歌](#唱歌) · [English](README.md)
 
 </div>
+
+> ### 这是一个 fork（非官方）
+>
+> 上游：[cloudoyx/any-audio](https://github.com/cloudoyx/any-audio) · 本仓库：[SeigenAmou/any-audio](https://github.com/SeigenAmou/any-audio)
+>
+> 本仓库的每一处改动都由 **LLM**（运行在 DeepSeek Harness 里的编码 Agent）在人类用户的指导下完成，并逐条记录在提交历史里。上游项目对这些改动不负任何责任。
+>
+> **本项目仍在打磨中，插件可能无法正常运行。** 请把它当作半成品，而不是一个版本。
+>
+> 相对上游，本 fork 增加了：
+>
+> - **64 位 VST2 插件可以渲染**，通过第二套宿主（dawdreamer）；VST3 仍走 pedalboard。32 位插件只列出，需要桥接。
+> - **硬件音源可以当一个声部**——乐谱里写 `"hw": "SD-20 PART A"`，这一声部的 MIDI 送出去、再从线路输入录回来。
+> - **插件预设**——可以导入用户在宿主里存好的 `.vstpreset` / `.fxp`；没有现成预设时，Agent 也能按参数名自己写一个 `.fxp`。
+> - **每个音源都能挂说明书**（插件也算）——手写，或从厂商 PDF、一整个网页文件夹导入。
+> - **演奏表情**——`score.expression` 给声部写入弯音、颤音、渐强、延音踏板和人性化时值。
+> - **`anyaudio_music` 可以直接吃 `.mid` 文件**；鼓组遇到没有采样的键会明确警告，而不是渲染出一段静音。
+> - 设置页新增「插件与音源」一页，预设按插件分组。
+
+---
+
 
 ---
 

@@ -7,9 +7,30 @@
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4b6bfb.svg)](#install)
 [![Status](https://img.shields.io/badge/status-early%20release-orange.svg)](#known-limitations)
 
-[Hear the difference](#hear-the-difference) · [The DAW](#the-daw) · [Install](#install) · [Sound sources](#sound-sources) · [Speech TTS](#speech-tts) · [Singing](#singing) · [中文说明](https://github.com/cloudoyx/any-audio/blob/main/README.zh-CN.md)
+[Hear the difference](#hear-the-difference) · [The DAW](#the-daw) · [Install](#install) · [Sound sources](#sound-sources) · [Speech TTS](#speech-tts) · [Singing](#singing) · [中文说明](README.zh-CN.md)
 
 </div>
+
+> ### This is a fork
+>
+> Upstream: [cloudoyx/any-audio](https://github.com/cloudoyx/any-audio) · This fork: [SeigenAmou/any-audio](https://github.com/SeigenAmou/any-audio)
+>
+> Every change in this fork was made by an **LLM** — the coding agent running inside DeepSeek Harness — under a human's direction, and is recorded step by step in the commit history. The upstream project is in no way responsible for it.
+>
+> **It is still being worked on and may not run.** Treat it as a work in progress, not a release, and expect rough edges.
+>
+> What this fork adds on top of upstream:
+>
+> - **64-bit VST2 instruments render** through a second host (dawdreamer); VST3 keeps rendering through pedalboard. 32-bit plugins are listed but need a bridge.
+> - **Hardware sound modules as score parts** — write `"hw": "SD-20 PART A"` and the part is sent out as MIDI and recorded back from a line input.
+> - **Plugin presets** — import a `.vstpreset` / `.fxp` a person saved in their own host, or let the agent write an `.fxp` from named parameters when none exists.
+> - **Manuals for every sound source**, plugins included — written by hand, or imported from a PDF or a folder of a manufacturer's web pages.
+> - **Performance expression** — `score.expression` writes bends, vibrato, swells, sustain pedal and humanised timing onto a part.
+> - **`anyaudio_music` takes a `.mid` file directly**, and a drum kit now warns when a key has no sample instead of rendering silence.
+> - **A separate "Plugins & sources" page** in settings, with a per-plugin preset list.
+
+---
+
 
 ---
 
