@@ -1,3 +1,7 @@
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+
 import { registerMidiTool } from './midi.js'
 import { registerMidioutTool } from './midiout.js'
 import { registerMusicTool } from './music.js'
@@ -31,10 +35,30 @@ export function registerAllTools(ctx, log = () => {}) {
       register(ctx)
       registered++
     } catch (error) {
-      log(`could not register ${name}: ${error instanceof Error ? error.message : String(error)}`)
+      const message = error instanceof Error ? error.message : String(error)
+      // A tool that fails to register simply vanishes from the agent, so leave
+      // a trace on disk: the host log is not always reachable from the plugin.
+      noteRegistrationFailure(name, message, error)
+      log(`could not register ${name}: ${message}`)
     }
   }
   return registered
+}
+
+/** Where the last registration failures are written; shared by every session. */
+export function registrationFailurePath() {
+  return join(homedir(), '.dsh', 'anyaudio', 'tool-register.log')
+}
+
+function noteRegistrationFailure(name, message, error) {
+  try {
+    const file = registrationFailurePath()
+    mkdirSync(dirname(file), { recursive: true })
+    const detail = error instanceof Error && error.stack ? `\n${error.stack}` : ''
+    appendFileSync(file, `${new Date().toISOString()} ${name}: ${message}${detail}\n`)
+  } catch {
+    // logging must never break plugin loading
+  }
 }
 
 export { sourcesToolDefinition } from './sources.js'

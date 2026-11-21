@@ -78,8 +78,10 @@ async function measure(path) {
   return {
     sampleRate: wav.sampleRate,
     durationSec: wav.frames / wav.sampleRate,
-    peakDb: peak > 0 ? toDb(peak) : null,
-    rmsDb: rms > 0 ? toDb(rms) : null,
+    // -120 dBFS instead of null: the host's schema checker rejects a null in a
+    // typed field; `silent` carries "nothing was captured".
+    peakDb: peak > 0 ? toDb(peak) : -120,
+    rmsDb: rms > 0 ? toDb(rms) : -120,
     silent: !(peak > 1e-5),
   }
 }
@@ -132,14 +134,14 @@ export const midioutToolDefinition = finalizeTool({
         sent: { type: 'number' },
         notes: { type: 'number' },
         durationSec: { type: 'number' },
-        latencyMs: { type: ['number', 'null'], description: 'Median audio lag behind the MIDI send; null when nothing was heard.' },
+        latencyMs: { type: 'number', description: 'Median audio lag behind the MIDI send, in ms; -1 when nothing was heard.' },
         spreadMs: { type: 'number' },
         offsetsMs: { type: 'array', items: { type: 'number' } },
         notesHeard: { type: 'number' },
         device: { type: 'string' },
         file: { type: 'string' },
-        peakDb: { type: ['number', 'null'] },
-        rmsDb: { type: ['number', 'null'] },
+        peakDb: { type: 'number', description: 'Peak level in dBFS; -120 means silence.' },
+        rmsDb: { type: 'number', description: 'RMS level in dBFS; -120 means silence.' },
         attached: { type: 'array', items: { type: 'object', additionalProperties: true } },
         warnings: { type: 'array', items: { type: 'string' } },
       },
@@ -159,7 +161,7 @@ export const midioutToolDefinition = finalizeTool({
         ].join('\n')
       }
       if (value.action === 'calibrate') {
-        if (value.latencyMs === null || value.latencyMs === undefined) {
+        if (value.latencyMs === null || value.latencyMs === undefined || value.latencyMs < 0) {
           return `${value.warning ?? 'no offset measured'} (port ${value.port}, input ${value.device})`
         }
         return [
@@ -171,7 +173,7 @@ export const midioutToolDefinition = finalizeTool({
       const lines = [`Sent ${value.sent} message(s) on ${value.port} (${value.durationSec?.toFixed(2)}s)`]
       if (value.file) {
         lines.push(`Captured ${value.durationSec?.toFixed(2)}s → ${value.file}`)
-        lines.push(`peak ${value.peakDb === null ? '—' : Number(value.peakDb).toFixed(1)} dBFS`)
+        lines.push(`peak ${Number(value.peakDb) <= -120 ? '—' : Number(value.peakDb).toFixed(1)} dBFS`)
       }
       if (value.warnings?.length) lines.push(`Warnings:\n${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
       const placed = value.attached ?? []
@@ -212,7 +214,7 @@ export const midioutToolDefinition = finalizeTool({
         action,
         port: measured.port,
         device: measured.device,
-        latencyMs: measured.latencyMs ?? null,
+        latencyMs: measured.latencyMs ?? -1,
         spreadMs: measured.spreadMs,
         offsetsMs: measured.offsetsMs ?? [],
         notesSent: measured.notesSent,

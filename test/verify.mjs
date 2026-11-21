@@ -1545,7 +1545,7 @@ await test('anyaudio_record lists inputs and captures whatever the cable carries
   assert(captured.ok === true, 'record reports ok')
   assert(captured.durationSec > 0, 'record reports a length')
   assert(typeof captured.file === 'string' && captured.file.length > 0, 'record names the file it wrote')
-  if (captured.peakDb === null) {
+  if (captured.peakDb <= -120) {
     assert(Array.isArray(captured.warnings) && captured.warnings.some((line) => /silence/.test(line)),
       'a silent capture says so instead of failing')
   }

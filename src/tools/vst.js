@@ -91,8 +91,12 @@ async function measure(path, sampleRateFallback) {
   return {
     sampleRate: wav.sampleRate || sampleRateFallback,
     durationSec: wav.frames / (wav.sampleRate || sampleRateFallback),
-    peakDb: Number.isFinite(peak) && peak > 0 ? toDb(peak) : null,
-    rmsDb: Number.isFinite(rms) && rms > 0 ? toDb(rms) : null,
+    // -120 dBFS is the number this toolchain uses for "no signal": the host's
+    // schema checker rejects a `null` in a typed field (that is why vst, record
+    // and midiout failed to register at first), so silence is a number and
+    // `silent` carries the meaning.
+    peakDb: Number.isFinite(peak) && peak > 0 ? toDb(peak) : -120,
+    rmsDb: Number.isFinite(rms) && rms > 0 ? toDb(rms) : -120,
     silent: !(peak > 1e-5),
   }
 }
@@ -150,8 +154,8 @@ export const vstToolDefinition = finalizeTool({
         delivered: { type: 'string' },
         durationSec: { type: 'number' },
         sampleRate: { type: 'number' },
-        peakDb: { type: ['number', 'null'], description: 'Null when the plugin rendered silence.' },
-        rmsDb: { type: ['number', 'null'] },
+        peakDb: { type: 'number', description: 'Peak level in dBFS; -120 means the plugin rendered silence.' },
+        rmsDb: { type: 'number', description: 'RMS level in dBFS; -120 means silence.' },
         attached: { type: 'array', items: { type: 'object', additionalProperties: true } },
         warnings: { type: 'array', items: { type: 'string' } },
       },

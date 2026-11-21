@@ -40,8 +40,10 @@ async function measure(path) {
   return {
     sampleRate: wav.sampleRate,
     durationSec: wav.frames / wav.sampleRate,
-    peakDb: peak > 0 ? toDb(peak) : null,
-    rmsDb: rms > 0 ? toDb(rms) : null,
+    // -120 dBFS instead of null: the host's schema checker rejects a null in a
+    // typed field; `silent` carries "nothing was captured".
+    peakDb: peak > 0 ? toDb(peak) : -120,
+    rmsDb: rms > 0 ? toDb(rms) : -120,
     silent: !(peak > 1e-5),
   }
 }
@@ -90,8 +92,8 @@ export const recordToolDefinition = finalizeTool({
         durationSec: { type: 'number' },
         sampleRate: { type: 'number' },
         channels: { type: 'number' },
-        peakDb: { type: ['number', 'null'], description: 'Null when the capture was silence.' },
-        rmsDb: { type: ['number', 'null'] },
+        peakDb: { type: 'number', description: 'Peak level in dBFS; -120 means the capture was silence.' },
+        rmsDb: { type: 'number', description: 'RMS level in dBFS; -120 means silence.' },
         attached: { type: 'array', items: { type: 'object', additionalProperties: true } },
         warnings: { type: 'array', items: { type: 'string' } },
       },
@@ -111,7 +113,7 @@ export const recordToolDefinition = finalizeTool({
       }
       const lines = [
         `Recorded ${value.durationSec?.toFixed(2)}s @ ${value.sampleRate} Hz from ${value.device} → ${value.file}`,
-        `peak ${value.peakDb === null ? '—' : Number(value.peakDb).toFixed(1)} dBFS, RMS ${value.rmsDb === null ? '—' : Number(value.rmsDb).toFixed(1)} dBFS`,
+        `peak ${Number(value.peakDb) <= -120 ? '—' : Number(value.peakDb).toFixed(1)} dBFS, RMS ${Number(value.rmsDb) <= -120 ? '—' : Number(value.rmsDb).toFixed(1)} dBFS`,
       ]
       if (value.warnings?.length) lines.push(`Warnings:\n${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
       const placed = value.attached ?? []
