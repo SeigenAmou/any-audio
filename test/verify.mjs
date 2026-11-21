@@ -8,6 +8,7 @@ import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
 import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
 import { planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
+import { peakPolyphony } from '../src/audio/hw-track.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
 import { registerAllTools } from '../src/tools/index.js'
 import { findFfmpeg, runFfmpeg } from '../src/tools/shared.js'
@@ -1597,6 +1598,16 @@ await test('a hardware part claims no SoundFont channel and still compiles', asy
     noPort = error
   }
   assert(noPort && /hw needs a "port"/.test(noPort.message), 'a hardware part without a port says what it needs')
+
+  // A module answers a fixed number of voices, so the score has to know how many
+  // notes sound at once: past that count the extra notes are silent, not broken.
+  const voiced = compileScore({
+    tracks: [{ name: 'v', hw: { port: 'SD-20 PART A', voices: 32 }, notes: [[0, 1, 'C4']] }],
+  })
+  assert(voiced.tracks[0].hw.voices === 32, 'a voice count on the module is kept')
+  assert(peakPolyphony([[0, 1, 60, 100], [0, 1, 64, 100], [0.5, 1, 67, 100]]) === 3, 'simultaneous notes count together')
+  assert(peakPolyphony([[0, 1, 60, 100], [1, 1, 64, 100], [2, 1, 67, 100]]) === 1, 'separate notes count one at a time')
+  assert(peakPolyphony([[0, 2, 60, 100], [0.5, 0.5, 64, 100], [1, 0.5, 67, 100]]) === 2, 'a note that ends as another starts is counted once')
 })
 
 await test('anyaudio_midiout lists ports and refuses a performance with nothing to play', async () => {

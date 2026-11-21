@@ -34,6 +34,28 @@ export function notesForHw(track) {
   return track.notes.map((note) => [note.start, note.duration, note.midi, note.velocity])
 }
 
+/** The most notes that sound at once. A module answers a fixed number of voices
+ *  (an SD-20 answers 64 across both of its parts); past that the extra notes are
+ *  dropped silently, which sounds like a thin arrangement rather than an error.
+ *  Worth a warning before it costs a take. */
+export function peakPolyphony(notes) {
+  const edges = []
+  for (const note of notes) {
+    const start = Number(note[0])
+    const end = start + Number(note[1])
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue
+    edges.push([start, 1], [end, -1])
+  }
+  edges.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  let live = 0
+  let peak = 0
+  for (const edge of edges) {
+    live += edge[1]
+    if (live > peak) peak = live
+  }
+  return peak
+}
+
 /** CC events the module should hear. `automation` in the score becomes track
  *  events, so a hardware part keeps the syntax a SoundFont part already has —
  *  which is how a GS module gets its bank select and part volume. */
@@ -95,6 +117,23 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
     ? track.hw.latencyMs
     : (Number.isFinite(configuredLatency) ? Math.max(0, configuredLatency) : 0)
   const warnings = []
+  // How many notes a module answers is a property of the module, not of the
+  // format: an SD-20 answers 64 voices, an XV-5080 or SC-88 answers 128. Never
+  // assume one; check only when the part says how many it has.
+  const polyphony = peakPolyphony(notes)
+  const declaredVoices = Number.isFinite(track.hw.voices) && track.hw.voices > 0 ? track.hw.voices : undefined
+  if (declaredVoices && polyphony > declaredVoices) {
+    warnings.push(
+      `this part peaks at ${polyphony} notes sounding at once and hw.voices says this module answers ${declaredVoices}, `
+      + 'so the extra notes are silent — thin the part, split it across ports, or correct voices',
+    )
+  } else if (!declaredVoices && polyphony > 64) {
+    warnings.push(
+      `${polyphony} notes sound at once and how many voices this module answers is unknown `
+      + '(an SD-20 answers 64, an XV-5080 or an SC-88 answers 128); notes past the limit are silent, '
+      + 'so put the real number in hw.voices to have it checked',
+    )
+  }
   if (!(latencyMs > 0)) {
     warnings.push(
       'no latency was given for this part, so the audio may start a few tens of milliseconds late. '

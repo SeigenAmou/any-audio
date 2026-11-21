@@ -217,12 +217,15 @@ function normalizeHw(spec, trackName) {
   const captureDevice = typeof raw.captureDevice === 'string' && raw.captureDevice.trim() ? raw.captureDevice.trim() : undefined
   const wantedLatency = Number(raw.latencyMs)
   const latencyMs = Number.isFinite(wantedLatency) ? Math.max(0, wantedLatency) : undefined
+  const wantedVoices = Number(raw.voices)
+  const voices = Number.isFinite(wantedVoices) && wantedVoices > 0 ? Math.round(wantedVoices) : undefined
   return {
     port,
     channel,
     ...(program === undefined ? {} : { program }),
     ...(captureDevice ? { captureDevice } : {}),
     ...(latencyMs === undefined ? {} : { latencyMs }),
+    ...(voices === undefined ? {} : { voices }),
   }
 }
 
