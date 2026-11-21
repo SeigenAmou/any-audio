@@ -3,11 +3,27 @@
 这个仓库是 `https://github.com/cloudoyx/any-audio` 的克隆，本地 `main` 上有一批上游没有的提交。
 上游是别人的仓库，所以不要直接往上推；推到自己的 fork，需要时再向原仓库提 PR。
 
+## 一个坑：给 fork 改可见性会拆掉 fork 关系
+
+把这仓库当 fork 建出来后改成私有（`gh repo edit --visibility private`），GitHub 会**断开 fork 关系**：
+`isFork` 变 `false`、`parent` 变 `null`，而且改回公开也**不会恢复**。之后就不能再向上游提 PR 了。
+
+这次的处理方式（不需要 `delete_repo` 权限）：
+
+```bash
+gh repo rename any-audio-pre-fork -R SeigenAmou/any-audio --yes   # 腾出名字，旧仓库留作备份
+gh repo fork cloudoyx/any-audio --clone=false                      # 重新 fork，关系正确
+git push fork main                                                 # 本地历史完整，快进推上去
+```
+
+结论：**要提 PR 就别动可见性**；确实想私有开发，就先在私有仓库里做，最后再 fork 一个公开的
+（或者接受失去 PR 能力，改用「打补丁 + 让上游自己合并」的沟通方式）。
+
 ## 现状（2026-11-21）
 
-- fork：<https://github.com/SeigenAmou/any-audio>，**私有**
+- fork：<https://github.com/SeigenAmou/any-audio>，**公开**（fork 关系正常）
 - 远端：`origin` = 上游，`fork` = 自己的
-- fork 比上游多 34 个提交，已推送
+- fork 比上游多 36 个提交，已推送
 
 ## 这台机器上的固定动作
 
