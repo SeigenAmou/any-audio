@@ -1812,6 +1812,78 @@ await test('preset files the hosts left behind can be listed without opening the
   await rm(root, { recursive: true, force: true })
 })
 
+await test('expression writes the bend and the swell as events a plugin plays', async () => {
+  const compiled = compileScore({
+    title: 'expression',
+    tracks: [{ name: 'lead', instrument: 'flute', notes: [[0, 2, 'A4', 90], [2, 2, 'C5', 90]] }],
+    expression: [
+      { type: 'pitchbend_line', track: 'lead', start: 0, end: 2, from: 0, to: 2047 },
+      { type: 'cc_line', track: 'lead', control: 11, start: 2, end: 4, from: 20, to: 120 },
+    ],
+  }, { sampleRate: 48000 })
+  const lead = compiled.tracks.find((track) => track.name === 'lead')
+  const bends = lead.events.filter((event) => event.type === 'pitch')
+  assert(bends.length > 8, `a bend is written as many small steps, not one (${bends.length})`)
+  assert(bends[0].value === 8192, `the bend starts at centre 8192, not ${bends[0]?.value}`)
+  assert(bends.at(-1).value > 10000, `the bend ends high, not ${bends.at(-1)?.value}`)
+  assert(bends.every((event) => event.value >= 0 && event.value <= 16383), 'every bend stays inside the 14-bit range')
+  const swell = lead.events.filter((event) => event.type === 'cc' && event.controller === 11)
+  assert(swell.length > 8, 'a controller line is written as steps')
+  assert(swell.every((event) => event.t >= 2 && event.t <= 4), 'the swell stays inside its window')
+  assert(compiled.expression?.[0]?.type === 'pitchbend_line', 'the compiled score reports what it applied')
+
+  // A name that is not in the score is a mistake to name, not to swallow.
+  let message = ''
+  try {
+    compileScore({ title: 'x', tracks: [{ name: 'lead', notes: [[0, 1, 'C4', 90]] }], expression: [{ type: 'sustain', track: 'bass', start: 0, end: 2 }] }, {})
+  } catch (error) {
+    message = error.message
+  }
+  assert(/names track "bass"/.test(message), `the unknown track is named, got "${message}"`)
+})
+
+await test('the pedal is a switch, and the velocity line moves the notes themselves', async () => {
+  const compiled = compileScore({
+    title: 'pedal',
+    tracks: [{ name: 'piano', instrument: 'grand-piano', notes: [[0, 1, 'C4', 40], [2, 1, 'E4', 40], [4, 1, 'G4', 40]] }],
+    expression: [
+      { type: 'sustain', start: 0, end: 4 },
+      { type: 'velocity_line', start: 0, end: 4, from: 30, to: 120 },
+    ],
+  }, { sampleRate: 48000 })
+  const piano = compiled.tracks.find((track) => track.name === 'piano')
+  const pedal = piano.events.filter((event) => event.type === 'cc' && event.controller === 64)
+  assert(pedal.length === 2 && pedal[0].value === 127 && pedal[1].value === 0,
+    `the pedal goes down once and up once, got ${JSON.stringify(pedal.map((event) => event.value))}`)
+  const velocities = piano.notes.map((note) => note.velocity)
+  assert(velocities[0] < velocities[1] && velocities[1] < velocities[2],
+    `the line rises across the phrase, got ${velocities.join(',')}`)
+  const onEvents = piano.events.filter((event) => event.type === 'on').map((event) => event.velocity)
+  assert(JSON.stringify(onEvents) === JSON.stringify(velocities),
+    'the note-on events carry the same velocities as the notes themselves')
+})
+
+await test('humanize is a repeatable shuffle, not a different take every run', async () => {
+  const score = {
+    title: 'shuffle',
+    tracks: [{ name: 'gtr', instrument: 'steel-guitar', notes: [[0, 1, 'E3', 70], [1, 1, 'G3', 70], [2, 1, 'B3', 70]] }],
+    expression: [{ type: 'humanize', amount: 12, timing: 0.01, seed: 42 }],
+  }
+  const first = compileScore(score, {}).tracks[0].notes.map((note) => [note.velocity, Number(note.start.toFixed(4))])
+  const second = compileScore(score, {}).tracks[0].notes.map((note) => [note.velocity, Number(note.start.toFixed(4))])
+  assert(JSON.stringify(first) === JSON.stringify(second), 'the same seed gives the same shuffle')
+  const other = compileScore({ ...score, expression: [{ type: 'humanize', amount: 12, timing: 0.01, seed: 7 }] }, {})
+    .tracks[0].notes.map((note) => [note.velocity, Number(note.start.toFixed(4))])
+  assert(JSON.stringify(first) !== JSON.stringify(other), 'a different seed is a different shuffle')
+
+  const empty = compileScore({
+    title: 'nothing-here',
+    tracks: [{ name: 'gtr', instrument: 'steel-guitar', notes: [[5, 1, 'E3', 70]] }],
+    expression: [{ type: 'velocity_line', start: 0, end: 1, from: 20, to: 100 }],
+  }, {})
+  assert(empty.warnings.some((line) => /found no note/.test(line)), 'a gesture over no notes is reported, not silently dropped')
+})
+
 if (!hadAnyAudioDir) {
   const leftover = await readdir(anyaudioDir).catch(() => [])
   if (leftover.length === 0) await rm(anyaudioDir, { recursive: true, force: true })

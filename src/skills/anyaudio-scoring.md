@@ -51,6 +51,34 @@
 - 自动化：`automation:[{track:"pad", controller:"volume", points:[[0,90],[20,50]]}]`，控制器支持 volume/pan/expression/modulation/sustain/reverb-send/chorus-send/brightness。
 - 时间从 0 开始、按视频时间轴写；`durationSec` 传视频总长，`tailSec` 留给尾音和混响。
 
+## 演奏表情（让同一个音听起来是人拉的）
+
+`notes` 只写了"哪个音、多轻多重"，`automation` 只画单条控制器曲线。同一个音从长弓拉到一半开始揉、一句旋律整体渐强、换和弦时踩一次踏板，这些是**曲式手势**，写在 `expression` 里：
+
+```json
+{
+  "expression": [
+    { "type": "velocity_line", "track": "lead", "start": 0, "end": 4, "from": 30, "to": 120 },
+    { "type": "pitchbend_line", "track": "lead", "start": 3, "end": 4, "from": -2047, "to": 0 },
+    { "type": "pitchbend_curve", "track": "pad", "start": 4, "end": 8, "depth": 300, "cycles": 4 },
+    { "type": "cc_line", "track": "pad", "control": 11, "start": 2, "end": 6, "from": 40, "to": 110 },
+    { "type": "cc_curve", "track": "pad", "control": 1, "start": 8, "end": 12, "min": 0, "max": 90, "pattern": "sine", "cycles": 3 },
+    { "type": "sustain", "track": "piano", "start": 0, "end": 12 },
+    { "type": "humanize", "amount": 12, "timing": 0.008, "seed": 7 }
+  ]
+}
+```
+
+- 时间是**秒**，和音符一样（不是拍）。`track` 省略就是所有轨。
+- `pitchbend_line` 从 `from` 滑到 `to`，值域 -8192..8191（8192 = 半个半音的整数位，实际弯音幅度取决于音源）。`pitchbend_curve` 是在 `base` 上做 `depth × sin(cycles × 2π × 进度)` 的颤音/揉弦。
+- `velocity_line` 改的是**音符本身**的力度（不是 CC），所以整段渐强会被所有音源听见。
+- `sustain` 是开关：起点踩下 CC64=127、终点抬起 0，不是渐变的。
+- `humanize` 是整段随机化：`amount` 是力度抖动幅度（1–127 的几分），`timing` 是起始秒的最大偏移；**同 seed 一定得到同一次抖动**，所以重渲染不会每次都变。
+- 与轨道的 `humanize:{timingMs,velocity}` 分工：轨道那个是每个音的微量抖动，`expression` 的 `humanize` 是整段一起做的、可复现的一次"换把"。
+- 能听见的声部：SoundFont 渲染（弯音走 `pitch` 事件、CC 走控制器）、VST2 声部（送的是 MIDI 文件，CC 和弯音都到插件）、硬件声部（同样走 MIDI）。**VST3 声部走 pedalboard 只收音频缓冲，收不到 MIDI**，给它写弯音不会有声音，改参数要用 `params` 或预设文件。
+- `score.automation` 里的 `"controller":"expression"` 是 **CC11**，和这里的 `expression` 不是一回事：前者是一条音量表情线，后者是整组手势。
+- 验收：同一段音符加与不加 `velocity_line`，整体 RMS 会按力度曲线变（实测 -23.6 → -26.1 dBFS）；`pitchbend_line` 让主频按弯音量整体偏移（实测 331 → 323 Hz）。
+
 ## 乐器选择
 
 - 民族/古风：`guzheng`(古筝)、`guqin`(古琴)、`pipa`(琵琶)、`erhu`(二胡)、`dizi`(笛)、`xiao`(箫)、`sheng`(笙)、`suona`(唢呐)、`bianzhong`(编钟)、`yangqin`(扬琴)、`taiko`(太鼓)。它们映射到最接近的 GM 音色，不是真采样，但比正弦合成有质感。

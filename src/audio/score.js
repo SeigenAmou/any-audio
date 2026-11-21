@@ -2,6 +2,7 @@
  * Score parsing: turns a compact JSON score (seconds-based, video-timeline
  * friendly) into sample-accurate MIDI events for the SoundFont renderer.
  */
+import { applyExpression } from './expression.js'
 
 const NOTE_BASE = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
 const ACCIDENTAL = { '#': 1, s: 1, '♯': 1, b: -1, '♭': -1 }
@@ -60,7 +61,7 @@ const AUTOMATION = {
 
 const DEFAULT_VELOCITY = 88
 const BLOCK = 128
-const EVENT_PRIORITY = { bank: 0, program: 1, cc: 2, off: 3, on: 4 }
+const EVENT_PRIORITY = { bank: 0, program: 1, cc: 2, pitch: 2, off: 3, on: 4 }
 
 export class ScoreError extends Error {
   constructor(issues) {
@@ -491,6 +492,13 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     target.events.sort((a, b) => a.t - b.t)
   }
 
+  // Expression writes what a player adds on top of the notes — a bend, a
+  // swell, the pedal, a little timing slack. It runs after automation so an
+  // expression never silently replaces a controller the score set on purpose.
+  const expressionReports = Array.isArray(score.expression) && score.expression.length
+    ? applyExpression(tracks, score.expression, { warn })
+    : []
+
   const endSec = tracks.reduce((max, track) => Math.max(max, track.endSec), 0)
   const declared = Number(score.durationSec)
   const durationSec = Number.isFinite(declared) && declared > 0 ? Math.max(declared, endSec) : endSec
@@ -506,6 +514,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       chorus: Number.isFinite(Number(score.effects?.chorus)) ? Number(score.effects.chorus) : 0,
       delay: Number.isFinite(Number(score.effects?.delay)) ? Number(score.effects.delay) : 0,
     },
+    ...(expressionReports.length ? { expression: expressionReports } : {}),
     warnings,
   }
 }
