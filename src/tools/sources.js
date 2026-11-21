@@ -2,13 +2,21 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { FONT_EXTENSIONS, RECOMMENDED_FONTS, findRecommendedByFile, fontSearchDirs, installFont, listFonts, resolveFont } from '../audio/fonts.js'
 import { loadCatalog } from '../audio/banks.js'
-import { listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
+import { extractManualText, listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
 import { DRUM_MAP, INSTRUMENTS } from '../audio/score.js'
 import { CATEGORY_LABELS, scoreTable } from '../audio/scoring.js'
 import { listSourceKinds } from '../audio/sources.js'
 import { loadSoundBank, listPresets } from '../audio/synth.js'
 import { readConfig, updateConfig } from '../config.js'
 import { finalizeTool, formatBytes, relativeToWorkspace, textRenderer, workspaceRootOf } from './shared.js'
+
+/**
+ * How much of an imported manual to keep. The manual file itself is capped at
+ * 256 KB, and CJK costs three bytes a character, so a full dump of a 300-page
+ * PDF would be rejected. 70k characters keeps roughly 200 KB of Japanese and a
+ * comfortable English manual, and the extractor says when it truncated.
+ */
+const MANUAL_EXTRACT_CHARS = 70000
 
 function groupInstruments() {
   const families = {
@@ -65,7 +73,7 @@ export const sourcesToolDefinition = finalizeTool({
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_remove'], description: 'What to do; defaults to "list". "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_remove" deletes one.' },
+      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_import', 'manual_remove'], description: 'What to do; defaults to "list". "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_import" reads a manual that came as a file or a folder (.txt .md .pdf .docx .html .mhtml — a folder of one-page HTML is merged), "manual_remove" deletes one.' },
       id: { type: 'string', description: 'Recommended source/bank id for install, default "generaluser".' },
       url: { type: 'string', description: 'Direct URL of a custom SoundFont to install.' },
       fromPath: { type: 'string', description: 'Local SoundFont path to install (useful when downloads are blocked).' },
@@ -73,7 +81,8 @@ export const sourcesToolDefinition = finalizeTool({
       font: { type: 'string', description: 'Same as path: an installed id (e.g. "musescore-general"), file name or .sf2 path.' },
       query: { type: 'string', description: 'Filter preset names, e.g. "piano", "koto", "shakuhachi".' },
       limit: { type: 'number', description: 'Max presets to list, default 60.' },
-      name: { type: 'string', description: 'With "manual"/"manual_set"/"manual_remove": which source the notes are about, e.g. "SD-20" or a saved hardware rig name.' },
+      name: { type: 'string', description: 'With "manual"/"manual_set"/"manual_import"/"manual_remove": which source the notes are about, e.g. "SD-20" or a saved hardware rig name.' },
+      path: { type: 'string', description: 'With "manual_import": the manual file, or a folder of them, to read.' },
       text: { type: 'string', description: 'With "manual_set": the notes themselves (markdown).' },
     },
   },
@@ -109,6 +118,12 @@ export const sourcesToolDefinition = finalizeTool({
         ].join('\n')
       }
       if (value.action === 'manual') return value.text
+      if (value.action === 'manual_import') {
+        return [
+          value.message,
+          ...(value.warnings?.length ? [`warnings:`, ...value.warnings.map((row) => `- ${row}`)] : []),
+        ].join('\n')
+      }
       if (value.action === 'instruments') {
         return [
           'Instrument aliases (name → GM program):',
@@ -181,6 +196,25 @@ export const sourcesToolDefinition = finalizeTool({
         path: saved.path,
         bytes: saved.bytes,
         message: `Saved notes about "${saved.name}" to ${saved.path}. anyaudio_sources with action "manual" now returns them before anyone composes for it.`,
+      }
+    }
+    if (action === 'manual_import') {
+      const source = String(args.path ?? args.fromPath ?? '').trim()
+      if (!source) throw new Error('manual_import needs "path" — a manual file (.txt/.md/.pdf/.docx/.html/.mhtml) or a folder of them')
+      const extracted = await extractManualText(resolve(source), { maxChars: MANUAL_EXTRACT_CHARS })
+      const saved = saveManual(args.name, extracted.text)
+      return {
+        ok: true,
+        action,
+        name: saved.name,
+        path: saved.path,
+        bytes: saved.bytes,
+        files: extracted.files,
+        read: extracted.read,
+        chars: extracted.chars,
+        truncated: extracted.truncated,
+        warnings: extracted.warnings,
+        message: `Read ${extracted.read} of ${extracted.files} file(s) into ${saved.path}. This is the raw text — read it with action "manual" and write the parts a composer needs (patch numbers, CC support, limits) into the same name so the next agent gets the shape of it, not the whole page count.`,
       }
     }
     if (action === 'manual_remove') {

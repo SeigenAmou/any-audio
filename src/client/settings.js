@@ -399,6 +399,8 @@ function ExternalRigsCard({ state, reload, notify }) {
   const [busy, setBusy] = useState(false)
   const [manual, setManual] = useState(null)
   const [savingManual, setSavingManual] = useState(false)
+  const [manualImportPath, setManualImportPath] = useState('')
+  const [importingManual, setImportingManual] = useState(false)
 
   async function save(next) {
     setBusy(true)
@@ -436,6 +438,28 @@ function ExternalRigsCard({ state, reload, notify }) {
       notify(error.message, 'error')
     } finally {
       setSavingManual(false)
+    }
+  }
+
+  // A manual usually arrives as a PDF, or as a folder of one-page HTML files
+  // from a manufacturer site. Read it in one go instead of asking the person to
+  // paste pages one by one.
+  const importManual = async () => {
+    const source = manualImportPath.trim()
+    if (!source) return
+    setImportingManual(true)
+    try {
+      const reply = await api('/manuals/import', { method: 'POST', body: { name: manual.name, path: source } })
+      setManual(current => ({ ...current, text: reply.text ?? '', exists: true }))
+      setManualImportPath('')
+      const notes = []
+      if (reply.read !== reply.files) notes.push(t('读到 {0} / {1} 个文件', reply.read, reply.files))
+      if (reply.truncated) notes.push(t('内容过长，已截断'))
+      notify(t('已导入说明书（{0} 字符）{1}', reply.chars ?? 0, notes.length ? '；' + notes.join('；') : ''))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setImportingManual(false)
     }
   }
 
@@ -497,6 +521,17 @@ function ExternalRigsCard({ state, reload, notify }) {
       ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 } },
         h('div', { style: S.label }, t('{0} 的说明书', manual.name)),
         h('div', { style: S.desc }, t('这台音源怎么用：音色号是什么、哪些控制器有效、有什么雷区。Agent 给这个音源写声部前会先读它。')),
+        h('div', { style: S.row },
+          h(TextInput, {
+            value: manualImportPath,
+            placeholder: t('说明书文件或文件夹，如 D:\\manuals\\SD-20.pdf'),
+            onChange: event => setManualImportPath(event.target.value),
+            style: { flex: 1 },
+          }),
+          h(Btn, { disabled: importingManual || !manualImportPath.trim(), onClick: () => void importManual() },
+            importingManual ? t('读取中…') : t('从文件/文件夹导入')),
+        ),
+        h('div', { style: S.desc }, t('支持 .txt .md .pdf .docx .html .mhtml；给一个文件夹会把里面的手册合并成一篇。')),
         h('textarea', {
           value: manual.text,
           onChange: event => setManual(current => ({ ...current, text: event.target.value })),

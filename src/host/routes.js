@@ -31,7 +31,7 @@ import { encodeWav, peakOf, rmsOf, toDb } from '../audio/wav.js'
 import { configPath, readConfig, resetConfig, updateConfig } from '../config.js'
 import { findFfmpeg, resolveOutputPath, runFfmpeg } from '../tools/shared.js'
 import { probeVstPlugins, scanVstLibrary } from '../audio/vst-host.js'
-import { listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
+import { extractManualText, listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
 import { handleClipBay, needsClientHeader } from './clipbay-routes.js'
 import { describeError, json, readJsonBody } from './http.js'
 
@@ -927,6 +927,21 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
       if (path === `${PREFIX}/manuals/save`) {
         try {
           return json(res, 200, { ok: true, ...saveManual(body.name, body.text) })
+        } catch (error) {
+          return json(res, 400, { ok: false, error: describeError(error) })
+        }
+      }
+      if (path === `${PREFIX}/manuals/import`) {
+        try {
+          const source = String(body.path ?? '').trim()
+          if (!source) return json(res, 400, { ok: false, error: 'path must name a manual file or a folder of them' })
+          const extracted = await extractManualText(resolve(source), { maxChars: 70000 })
+          const saved = saveManual(body.name, extracted.text)
+          return json(res, 200, {
+            ok: true, ...saved,
+            files: extracted.files, read: extracted.read, chars: extracted.chars,
+            truncated: extracted.truncated, warnings: extracted.warnings,
+          })
         } catch (error) {
           return json(res, 400, { ok: false, error: describeError(error) })
         }

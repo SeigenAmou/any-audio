@@ -11,8 +11,24 @@
 // module in every project).
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { spawn } from 'node:child_process'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
+/** Vendors ship .txt, .md, .pdf, .docx and folders of one-page HTML; this reads them. */
+export function manualExtractorPath() {
+  const configured = process.env.ANYAUDIO_DOC_EXTRACTOR
+  if (configured && configured.trim()) return configured.trim()
+  return join(here, '..', '..', 'engine', 'doc_extract.py')
+}
+
+export function manualPython() {
+  const configured = process.env.ANYAUDIO_PYTHON
+  return configured && configured.trim() ? configured.trim() : 'python'
+}
 
 /** A manual is prose, not a sample library; anything past this is a mistake. */
 export const MAX_MANUAL_BYTES = 256 * 1024
@@ -89,3 +105,80 @@ export function removeManual(name) {
   rmSync(path)
   return { name: slug, path, removed: true }
 }
+
+/**
+ * Read a manual that came as a file or a folder of files and return its text.
+ *
+ * This only extracts; it does not summarise. A thousand-page PDF and a folder of
+ * forty HTML pages both come back as one markdown-ish document with a heading per
+ * file, and the agent reading it is the one that decides what matters.
+ */
+export function extractManualText(sourcePath, { maxChars = 180000, timeoutMs = 180000 } = {}) {
+  const target = String(sourcePath ?? '').trim()
+  if (!target) return Promise.reject(new Error('manual_import needs a path to a file or a folder'))
+  const outPath = join(tmpdir(), `anyaudio-manual-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (error, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        if (existsSync(outPath)) rmSync(outPath)
+      } catch {
+        /* a leftover temp file is not worth failing the import */
+      }
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill()
+      } catch {
+        /* already gone */
+      }
+      finish(new Error(`reading that manual took longer than ${Math.round(timeoutMs / 1000)}s`))
+    }, timeoutMs)
+    let child
+    try {
+      child = spawn(manualPython(), ['-X', 'utf8', manualExtractorPath(), '--path', target, '--out', outPath, '--max-chars', String(maxChars)], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      finish(new Error(`could not start ${manualPython()}: ${error.message}`))
+      return
+    }
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    child.on('error', (error) => finish(new Error(`could not start ${manualPython()}: ${error.message}`)))
+    child.on('close', () => {
+      let parsed = null
+      try {
+        parsed = JSON.parse(stdout.trim())
+      } catch {
+        finish(new Error(`the extractor said nothing usable${stderr ? `: ${stderr.trim().slice(0, 300)}` : ''}`))
+        return
+      }
+      if (!parsed?.ok) {
+        finish(new Error(parsed?.error ?? 'nothing readable was found'))
+        return
+      }
+      let text = ''
+      try {
+        text = readFileSync(outPath, 'utf8')
+      } catch (error) {
+        finish(new Error(`the extractor wrote nothing: ${error.message}`))
+        return
+      }
+      finish(null, { text, files: parsed.files, read: parsed.read, chars: parsed.chars, truncated: parsed.truncated, warnings: parsed.warnings ?? [] })
+    })
+  })
+}
+
