@@ -28,6 +28,8 @@
 > - **Performance expression** — `score.expression` writes bends, vibrato, swells, sustain pedal and humanised timing onto a part.
 > - **`anyaudio_music` takes a `.mid` file directly**, and a drum kit now warns when a key has no sample instead of rendering silence.
 > - **A separate "Plugins & sources" page** in settings, with a per-plugin preset list.
+> - **Hardware takes line themselves up** — every `hw` render starts with a measuring note, so the recording is cut where the sound actually began instead of trusting a hand-measured latency. A kit that lacks a key now slides that hit to the nearest key it does have and says so.
+> - **Clear failures** — an input that delivers no frames, or a plugin that writes an empty take, is named as such instead of surfacing as `missing or empty data chunk`.
 
 ---
 

@@ -34,6 +34,8 @@ An agent-driven audio production toolkit for music, sound effects, narration, an
 > - **演奏表情**——`score.expression` 给声部写入弯音、颤音、渐强、延音踏板和人性化时值。
 > - **`anyaudio_music` 可以直接吃 `.mid` 文件**；鼓组遇到没有采样的键会明确警告，而不是渲染出一段静音。
 > - 设置页新增「插件与音源」一页，预设按插件分组。
+> - **硬件声部自己对齐**——每次 `hw` 渲染先发一个测量音，按声音真正开始的位置裁切，不再依赖手填延迟；缺键的鼓组会把那一击挪到最近的真键上并说明。
+> - **失败说得清楚**——输入一个采样都没给、或插件写了个空文件，会直接指出是哪个声部，而不是一句 `missing or empty data chunk`。
 
 ---
 
