@@ -30,6 +30,8 @@ import { gpuStatus, installGpuRuntime } from '../audio/singing-gpu.js'
 import { encodeWav, peakOf, rmsOf, toDb } from '../audio/wav.js'
 import { configPath, readConfig, resetConfig, updateConfig } from '../config.js'
 import { findFfmpeg, resolveOutputPath, runFfmpeg } from '../tools/shared.js'
+import { probeVstPlugins, scanVstLibrary } from '../audio/vst-host.js'
+import { listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
 import { handleClipBay, needsClientHeader } from './clipbay-routes.js'
 import { describeError, json, readJsonBody } from './http.js'
 
@@ -890,6 +892,29 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
       const job = runningJob(url.searchParams.get('kind') ?? 'install')
       return json(res, 200, { ok: true, job: job ? publicJob(job) : null })
     }
+    if (method === 'GET' && path === `${PREFIX}/manuals`) {
+      try {
+        return json(res, 200, { ok: true, manuals: listManuals(), directory: manualsDir() })
+      } catch (error) {
+        return json(res, 500, { ok: false, error: describeError(error) })
+      }
+    }
+    if (method === 'GET' && path === `${PREFIX}/manuals/read`) {
+      try {
+        const found = readManual(url.searchParams.get('name') ?? '')
+        return json(res, 200, found ? { ok: true, ...found } : { ok: true, name: url.searchParams.get('name') ?? '', text: null })
+      } catch (error) {
+        return json(res, 400, { ok: false, error: describeError(error) })
+      }
+    }
+    if (method === 'GET' && path === `${PREFIX}/vst/plugins`) {
+      try {
+        const { config } = await readConfig()
+        return json(res, 200, { ok: true, ...scanVstLibrary(config.sources?.vstDirs ?? []) })
+      } catch (error) {
+        return json(res, 500, { ok: false, error: describeError(error) })
+      }
+    }
     if (method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
 
     let body
@@ -899,6 +924,25 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
       return json(res, 400, { ok: false, error: describeError(error) })
     }
     try {
+      if (path === `${PREFIX}/manuals/save`) {
+        try {
+          return json(res, 200, { ok: true, ...saveManual(body.name, body.text) })
+        } catch (error) {
+          return json(res, 400, { ok: false, error: describeError(error) })
+        }
+      }
+      if (path === `${PREFIX}/manuals/remove`) {
+        try {
+          return json(res, 200, { ok: true, ...removeManual(body.name) })
+        } catch (error) {
+          return json(res, 400, { ok: false, error: describeError(error) })
+        }
+      }
+      if (path === `${PREFIX}/vst/probe`) {
+        const paths = Array.isArray(body.paths) ? body.paths.map((entry) => String(entry ?? '')).filter(Boolean) : []
+        if (!paths.length) return json(res, 400, { ok: false, error: 'paths must name at least one plugin' })
+        return json(res, 200, { ok: true, plugins: await probeVstPlugins(paths.slice(0, 40)) })
+      }
       if (path === `${PREFIX}/config`) return json(res, 200, await configUpdate(body))
       if (path === `${PREFIX}/config/reset`) return json(res, 200, await configReset())
       if (path === `${PREFIX}/singing/install`) return json(res, 200, await singingInstallRoute(body))

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { compileScore, parsePitch } from '../src/audio/score.js'
 import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
@@ -9,6 +9,8 @@ import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
 import { planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
 import { peakPolyphony } from '../src/audio/hw-track.js'
+import { listManuals, manualSlug, readManual, removeManual, saveManual } from '../src/audio/manuals.js'
+import { peInfo, scanVstLibrary, vst2Kind } from '../src/audio/vst-host.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
 import { registerAllTools } from '../src/tools/index.js'
 import { findFfmpeg, runFfmpeg } from '../src/tools/shared.js'
@@ -1682,11 +1684,40 @@ await test('anyaudio_midiout lists ports and refuses a performance with nothing 
   assert(needsDevice, 'calibrate without an input is refused')
 })
 
+await test('a manual about a source lives under one slug no matter how it is spelled', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'anyaudio-manual-'))
+  const previous = process.env.ANYAUDIO_MANUALS
+  process.env.ANYAUDIO_MANUALS = dir
+  try {
+    assert(manualSlug('SD-20 / PART A') === 'sd-20-part-a', 'the slug folds case and separators')
+    const saved = saveManual('SD-20 PART A', '# SD-20\nprogram 0 is the piano')
+    assert(existsSync(saved.path), 'the note is written to disk')
+    assert(listManuals().length === 1, 'one manual is listed')
+    assert(readManual('sd-20 part a').text.includes('program 0 is the piano'), 'another spelling finds the same file')
+    assert(readManual('no-such-source') === null, 'a source without notes reads as null')
+    assert(removeManual('SD-20 PART A').removed === true, 'remove reports that it removed the file')
+    assert(listManuals().length === 0, 'nothing is left behind')
+  } finally {
+    if (previous === undefined) delete process.env.ANYAUDIO_MANUALS
+    else process.env.ANYAUDIO_MANUALS = previous
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+await test('the plugin scan reads the PE header instead of guessing the bitness', () => {
+  const info = peInfo(process.execPath)
+  assert(info && info.machine === 0x8664, 'this node binary is a 64-bit PE image')
+  assert(info.isDll === false, 'an executable is reported as not a DLL')
+  assert(vst2Kind(process.execPath) === null, 'an executable without a VSTPluginMain export is not a VST2 plugin')
+  const library = scanVstLibrary([])
+  assert(Array.isArray(library.plugins) && Array.isArray(library.legacy32) && Array.isArray(library.dirs), 'the library result carries plugins, legacy32 and dirs')
+  assert(library.plugins.every((entry) => entry.format === 'vst3' || entry.format === 'vst2'), 'every plugin is labelled VST3 or VST2')
+})
+
 if (!hadAnyAudioDir) {
   const leftover = await readdir(anyaudioDir).catch(() => [])
   if (leftover.length === 0) await rm(anyaudioDir, { recursive: true, force: true })
 }
-
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
 

@@ -91,6 +91,38 @@ def main():
             })
             continue
 
+        if op == "probe":
+            # What the settings page shows in the plugin list. Everything here is
+            # an attribute of the loaded plugin, so it has to be asked rather
+            # than read off the file.
+            name = ""
+            vendor = ""
+            for attribute in ("name", "plugin_name"):
+                try:
+                    value = getattr(plugin, attribute)
+                    if isinstance(value, str) and value:
+                        name = value
+                        break
+                except Exception:
+                    pass
+            for attribute in ("manufacturer_name", "vendor", "manufacturer"):
+                try:
+                    value = getattr(plugin, attribute)
+                    if isinstance(value, str) and value:
+                        vendor = value
+                        break
+                except Exception:
+                    pass
+            instrument = bool(getattr(plugin, "is_instrument", False))
+            emit({
+                "ok": True,
+                "name": name,
+                "vendor": vendor,
+                "instrument": instrument,
+                "category": "instrument" if instrument else "effect",
+            })
+            continue
+
         out = request.get("out")
         if not out:
             emit({"ok": False, "kind": "param", "error": "out is required for render"})

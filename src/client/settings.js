@@ -281,6 +281,19 @@ function VstDirsCard({ state, reload, notify }) {
   const dirs = state?.config?.sources?.vstDirs ?? []
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const [library, setLibrary] = useState(null)
+  const [probing, setProbing] = useState(false)
+  const [probed, setProbed] = useState({})
+
+  const loadLibrary = useCallback(async () => {
+    try {
+      setLibrary(await api('/vst/plugins'))
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }, [notify])
+
+  useEffect(() => { void loadLibrary() }, [loadLibrary, dirs.join('|')])
 
   async function save(next) {
     setBusy(true)
@@ -291,7 +304,7 @@ function VstDirsCard({ state, reload, notify }) {
     } catch (error) {
       notify(error.message, 'error')
     } finally {
-      setBusy('')
+      setBusy(false)
     }
   }
 
@@ -306,20 +319,71 @@ function VstDirsCard({ state, reload, notify }) {
     void save([...dirs, value])
   }
 
+  // Loading the plugin is the only way to learn who made it and whether it is
+  // an instrument, so this is a deliberate button rather than part of the scan:
+  // a plugin that opens a licence window costs one timeout each.
+  const probe = async () => {
+    const paths = (library?.plugins ?? []).map(entry => entry.path)
+    if (!paths.length) return
+    setProbing(true)
+    try {
+      const reply = await api('/vst/probe', { method: 'POST', body: { paths } })
+      const next = {}
+      for (const row of reply.plugins ?? []) next[row.path] = row
+      setProbed(next)
+      const failed = (reply.plugins ?? []).filter(row => !row.ok).length
+      notify(failed ? t('已探测 {0} 个，{1} 个没有应答', paths.length, failed) : t('已探测 {0} 个插件', paths.length))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  const rows = library?.plugins ?? []
+  const legacy = library?.legacy32 ?? []
+  const formatLabel = (plugin) => {
+    const probedRow = probed[plugin.path]
+    const kind = probedRow?.ok
+      ? (probedRow.instrument ? t('合成器') : t('效果器'))
+      : (plugin.category === 'instrument' ? t('合成器') : plugin.category === 'effect' ? t('效果器') : '')
+    const vendor = probedRow?.ok ? probedRow.vendor : plugin.vendor
+    const format = plugin.format === 'vst2' ? 'VST2' : 'VST3'
+    return [format, kind, vendor].filter(Boolean).join(' · ')
+  }
+
   return h(Card, {
     title: t('VST 插件目录'),
-    desc: t('除了标准目录，还要去哪里找 VST3 乐器。可以加多条；每条会在扫描时和标准目录一起看。'),
+    desc: t('除了标准目录，还要去哪里找 VST3 与 64 位 VST2 乐器。可以加多条；每条会在扫描时和标准目录一起看。'),
+    right: h(Btn, { disabled: probing || !rows.length, onClick: () => void probe() }, probing ? t('探测中…') : t('探测类型')),
   },
     dirs.length
       ? h('div', { style: S.list }, dirs.map((dir, index) => h('div', { style: { ...S.row, justifyContent: 'space-between' } },
         h('span', { style: S.mono }, dir),
-        h(Btn, { disabled: Boolean(busy), onClick: () => void save(dirs.filter((_, i) => i !== index)) }, t('删除')),
+        h(Btn, { disabled: busy, onClick: () => void save(dirs.filter((_, i) => i !== index)) }, t('删除')),
       )))
       : h('div', { style: S.desc }, t('还没有额外的目录。')),
     h('div', { style: S.row },
       h(TextInput, { value: draft, onChange: setDraft, placeholder: t('例如 D:\\\\VST3') }),
-      h(Btn, { disabled: Boolean(busy) || !draft.trim(), onClick: add }, t('添加')),
+      h(Btn, { disabled: busy || !draft.trim(), onClick: add }, t('添加')),
     ),
+    h('div', { style: { ...S.label, marginTop: 12 } }, t('扫到的插件（{0}）', rows.length)),
+    rows.length
+      ? h('div', { style: S.list }, rows.map(plugin => h('div', { style: { ...S.row, justifyContent: 'space-between' } },
+        h('div', { style: { minWidth: 0 } },
+          h('div', { style: { ...S.mono, overflow: 'hidden', textOverflow: 'ellipsis' } }, plugin.name),
+          h('div', { style: S.desc }, formatLabel(plugin)),
+        ),
+        h('span', { style: S.desc }, plugin.bytes ? bytes(plugin.bytes) : ''),
+      )))
+      : h('div', { style: S.desc }, library ? t('这些目录里还没有插件。') : t('正在扫描…')),
+    legacy.length
+      ? h('div', { style: { ...S.desc, marginTop: 8 } },
+        t('另有 {0} 个 32 位 VST2 插件：64 位宿主无法加载，需要桥接后才能用。', legacy.length),
+        ' ',
+        h('span', { style: S.mono }, legacy.slice(0, 6).map(row => row.name).join('、')),
+      )
+      : null,
   )
 }
 
@@ -333,6 +397,8 @@ function ExternalRigsCard({ state, reload, notify }) {
   const rigs = state?.config?.sources?.external ?? []
   const [draft, setDraft] = useState({ name: '', port: '', device: '', latencyMs: '', voices: '' })
   const [busy, setBusy] = useState(false)
+  const [manual, setManual] = useState(null)
+  const [savingManual, setSavingManual] = useState(false)
 
   async function save(next) {
     setBusy(true)
@@ -348,6 +414,30 @@ function ExternalRigsCard({ state, reload, notify }) {
   }
 
   const set = (key, value) => setDraft(current => ({ ...current, [key]: value }))
+
+  // Notes about the module, so an agent composing for it does not have to guess
+  // which program is the Rhodes or which controller this one ignores.
+  const openManual = async (name) => {
+    try {
+      const reply = await api(`/manuals/read?name=${encodeURIComponent(name)}`)
+      setManual({ name, text: reply.text ?? '', exists: reply.text !== null })
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }
+
+  const saveManualText = async () => {
+    setSavingManual(true)
+    try {
+      await api('/manuals/save', { method: 'POST', body: { name: manual.name, text: manual.text } })
+      notify(t('说明书已保存'))
+      setManual(current => ({ ...current, exists: true }))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setSavingManual(false)
+    }
+  }
 
   const add = () => {
     const name = draft.name.trim()
@@ -387,6 +477,7 @@ function ExternalRigsCard({ state, reload, notify }) {
             Number.isFinite(rig.voices) ? t('{0} 复音', rig.voices) : t('未标复音'),
           ].join(' · ')),
         ),
+        h(Btn, { disabled: Boolean(busy), onClick: () => void openManual(rig.name) }, t('说明书')),
         h(Btn, { disabled: Boolean(busy), onClick: () => void save(rigs.filter((_, i) => i !== index)) }, t('删除')),
       )))
       : h('div', { style: S.desc }, t('还没有登记外部音源。填一个名字、端口和输入就能用。')),
@@ -402,6 +493,22 @@ function ExternalRigsCard({ state, reload, notify }) {
       ),
       h('div', { style: S.row }, h(Btn, { disabled: Boolean(busy), onClick: add }, t('添加外部音源'))),
     ),
+    manual
+      ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 } },
+        h('div', { style: S.label }, t('{0} 的说明书', manual.name)),
+        h('div', { style: S.desc }, t('这台音源怎么用：音色号是什么、哪些控制器有效、有什么雷区。Agent 给这个音源写声部前会先读它。')),
+        h('textarea', {
+          value: manual.text,
+          onChange: event => setManual(current => ({ ...current, text: event.target.value })),
+          placeholder: t('例如：PART A 的 program 0 是 Concert Piano，44 是 Strings；不响应 CC64 延音踏板；复音 64。'),
+          style: { minHeight: 150, width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: 13, padding: 8 },
+        }),
+        h('div', { style: S.row },
+          h(Btn, { disabled: savingManual || !manual.text.trim(), onClick: () => void saveManualText() }, savingManual ? t('保存中…') : t('保存说明书')),
+          h(Btn, { disabled: savingManual, onClick: () => setManual(null) }, t('关闭')),
+        ),
+      )
+      : null,
   )
 }
 

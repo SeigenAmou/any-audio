@@ -16,7 +16,7 @@ import { parseWav, toDb } from '../audio/wav.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
 import { readConfig } from '../config.js'
-import { describeVst, renderVst, scanVstPlugins, vstStatus } from '../audio/vst-host.js'
+import { describeVst, renderVst, scanVstLibrary, vstStatus } from '../audio/vst-host.js'
 import { findPreset, listPresets, presetDir, removePreset, savePreset } from '../audio/vst-preset.js'
 import {
   deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace,
@@ -283,7 +283,15 @@ export const vstToolDefinition = finalizeTool({
       const limitArg = Number(args.limit)
       const limit = Number.isFinite(limitArg) && limitArg > 0 ? Math.min(Math.floor(limitArg), 500) : 60
       const { config } = await readConfig()
-      const all = scanVstPlugins(config.sources?.vstDirs ?? []).map((entry) => ({ name: friendlyName(entry.path), path: entry.path, bytes: entry.bytes }))
+      const library = scanVstLibrary(config.sources?.vstDirs ?? [])
+      const all = library.plugins.map((entry) => ({
+        name: friendlyName(entry.path),
+        path: entry.path,
+        bytes: entry.bytes,
+        format: entry.format,
+        ...(entry.vendor ? { vendor: entry.vendor } : {}),
+        ...(entry.category ? { category: entry.category } : {}),
+      }))
       const matched = query
         ? all.filter((entry) => entry.path.toLowerCase().includes(query) || entry.name.toLowerCase().includes(query))
         : all
@@ -294,8 +302,15 @@ export const vstToolDefinition = finalizeTool({
         available: status.available,
         python: status.python,
         pedalboard: status.pedalboard ?? null,
+        dirs: library.dirs,
         count: matched.length,
         plugins: matched.slice(0, limit),
+        ...(library.legacy32.length
+          ? { legacy32: library.legacy32.slice(0, 20), legacy32Note: 'these are 32-bit VST2 plugins; a 64-bit host cannot load them, so they are listed but not playable until a bridge turns them into 64-bit plugins' }
+          : {}),
+        ...(library.plugins.some((entry) => entry.format === 'vst2')
+          ? { vst2Note: 'VST2 plugins are listed but cannot be rendered here: the offline host loads VST3 only' }
+          : {}),
       }
     }
 
@@ -314,6 +329,9 @@ export const vstToolDefinition = finalizeTool({
       presetParams = found.params
     }
     if (!plugin) throw new Error(`${action} needs "plugin": the full path to a .vst3 (get one from action "scan"), or "preset": a saved patch`)
+    if (/\.dll$/i.test(plugin)) {
+      throw new Error('a VST2 .dll cannot be rendered here: the offline host loads VST3 only. The scan still lists it so it can be found, but playing it needs a host that speaks VST2.')
+    }
 
     if (action === 'info') {
       const info = await describeVst(plugin)

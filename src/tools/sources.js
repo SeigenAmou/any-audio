@@ -1,7 +1,8 @@
-import { readdir, stat } from 'node:fs/promises'
-import { extname, join } from 'node:path'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { extname, join, resolve } from 'node:path'
 import { FONT_EXTENSIONS, RECOMMENDED_FONTS, findRecommendedByFile, fontSearchDirs, installFont, listFonts, resolveFont } from '../audio/fonts.js'
 import { loadCatalog } from '../audio/banks.js'
+import { listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
 import { DRUM_MAP, INSTRUMENTS } from '../audio/score.js'
 import { CATEGORY_LABELS, scoreTable } from '../audio/scoring.js'
 import { listSourceKinds } from '../audio/sources.js'
@@ -64,7 +65,7 @@ export const sourcesToolDefinition = finalizeTool({
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds'], description: 'What to do; defaults to "list".' },
+      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_remove'], description: 'What to do; defaults to "list". "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_remove" deletes one.' },
       id: { type: 'string', description: 'Recommended source/bank id for install, default "generaluser".' },
       url: { type: 'string', description: 'Direct URL of a custom SoundFont to install.' },
       fromPath: { type: 'string', description: 'Local SoundFont path to install (useful when downloads are blocked).' },
@@ -72,6 +73,8 @@ export const sourcesToolDefinition = finalizeTool({
       font: { type: 'string', description: 'Same as path: an installed id (e.g. "musescore-general"), file name or .sf2 path.' },
       query: { type: 'string', description: 'Filter preset names, e.g. "piano", "koto", "shakuhachi".' },
       limit: { type: 'number', description: 'Max presets to list, default 60.' },
+      name: { type: 'string', description: 'With "manual"/"manual_set"/"manual_remove": which source the notes are about, e.g. "SD-20" or a saved hardware rig name.' },
+      text: { type: 'string', description: 'With "manual_set": the notes themselves (markdown).' },
     },
   },
   output: {
@@ -97,6 +100,15 @@ export const sourcesToolDefinition = finalizeTool({
       },
     },
     render: textRenderer((_args, value) => {
+      if (value.action === 'manuals') {
+        return [
+          value.manuals.length
+            ? `Notes written about sound sources (${value.manuals.length}), in ${value.directory}:`
+            : `No notes written about any source yet (folder: ${value.directory}).`,
+          ...value.manuals.map((row) => `- ${row.name} (${formatBytes(row.bytes)}${row.updated ? `, ${row.updated.slice(0, 10)}` : ''}) — read with action "manual"`),
+        ].join('\n')
+      }
+      if (value.action === 'manual') return value.text
       if (value.action === 'instruments') {
         return [
           'Instrument aliases (name → GM program):',
@@ -145,6 +157,36 @@ export const sourcesToolDefinition = finalizeTool({
   async execute(args, exec) {
     const workspaceRoot = await workspaceRootOf(exec)
     const action = args.action ?? 'list'
+    if (action === 'manuals') {
+      return { ok: true, action, manuals: listManuals(), directory: manualsDir() }
+    }
+    if (action === 'manual') {
+      const found = readManual(args.name)
+      if (!found) {
+        const available = listManuals().map((row) => row.name).join(', ') || '(none written yet)'
+        throw new Error(`no manual for "${String(args.name ?? '')}". Saved manuals: ${available}. Write one with action "manual_set" (name + text), or ask the person who owns the source to describe it.`)
+      }
+      return { ok: true, action, name: found.name, text: found.text, path: found.path }
+    }
+    if (action === 'manual_set') {
+      const body = args.text !== undefined
+        ? String(args.text)
+        : (args.fromPath ? await readFile(resolve(String(args.fromPath)), 'utf8') : '')
+      if (!body.trim()) throw new Error('manual_set needs "text" (the notes), or "fromPath" (a markdown file to copy them from)')
+      const saved = saveManual(args.name, body)
+      return {
+        ok: true,
+        action,
+        name: saved.name,
+        path: saved.path,
+        bytes: saved.bytes,
+        message: `Saved notes about "${saved.name}" to ${saved.path}. anyaudio_sources with action "manual" now returns them before anyone composes for it.`,
+      }
+    }
+    if (action === 'manual_remove') {
+      const gone = removeManual(args.name)
+      return { ok: true, action, name: gone.name, path: gone.path, removed: gone.removed }
+    }
     if (action === 'install') {
       const result = await installFont({
         id: args.id ?? 'generaluser',

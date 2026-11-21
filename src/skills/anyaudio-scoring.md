@@ -183,7 +183,7 @@ MIDI 不是音频：它不进工程、不参与混音、`anyaudio://timeline` �
 
 SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声音它给不了——Roland 的 JUNO/JUPITER、TB-303 的滑音、SRX 的采样乐器。本机装了 VST3 时，可以直接让这些插件出声。
 
-先 `action:"status"`：它告诉你 Python 与 pedalboard 在不在（不在就告诉用户装一下，别自己 pip install）。然后 `action:"scan"` 列出能加载的插件（已经滤掉 3–6KB 的重定向桩和授权不明的替身文件）。`action:"info"` 给出某个插件的参数名与原始取值范围，改音色就靠它。
+先 `action:"status"`：它告诉你 Python 与 pedalboard 在不在（不在就告诉用户装一下，别自己 pip install）。然后 `action:"scan"` 列出能加载的插件（已经滤掉 3–6KB 的重定向桩和授权不明的替身文件）。扫描认得两种格式：**VST3** 与 **64 位 VST2**（`.dll`，靠读 PE 头与导出表判断，不是看扩展名）。**只有 VST3 能渲染**——VST2 会被列出来但播放时会明确报错；32 位 VST2 单独列成 `legacy32`，那是 64 位宿主加载不了的，要靠用户自己做桥接。扫描结果里的厂商与「合成器/效果器」两类信息多数要加载插件才能拿到（单文件 bundle 里没有 moduleinfo.json），所以设置页上那个「探测类型」按钮是一次性的、可能要等几秒。`action:"info"` 给出某个插件的参数名与原始取值范围，改音色就靠它。
 
 `action:"render"` 一次渲染一个插件的若干个音：
 
@@ -255,6 +255,7 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 ```
 
 - **登记过的外部音源可以直接写名字**：在 设置 → AnyAudio → 音源 → 外部音源 里登记过「名字 + MIDI 端口 + 音频输入」之后，`"hw": "SD-20"` 就等于同时写了 `port`、`captureDevice`、`latencyMs`、`voices`。轨上再写的字段会覆盖登记值（比如只改 `channel`）。名字没登记就照旧当端口名用，不会报错。
+- **写声部前先看说明书**：`anyaudio_sources {action:"manuals"}` 列出所有为音源写过的说明，`{action:"manual", name:"SD-20"}` 读某一篇。说明书记的是这台模块的真实用法（哪个音色号是什么、哪些控制器不起作用、有什么坑），比从型号或说明书 PDF 推更准。**没有说明书时不要凭型号猜音色号**——问用户，然后把答案用 `{action:"manual_set", name:"SD-20", text:"…"}` 存下来，别的会话下次也能直接用。设置页 音源 → 外部音源 每条右侧也有「说明书」按钮，用户自己也能写。
 - 短形式 `hw` 只写端口名；长形式还可给 `channel`（0–15，这个端口自己的通道号）、`program`（音色号）、`captureDevice`、`latencyMs`、`voices`（模块的复音数）。
 - `captureDevice` 不写就找环境变量 `ANYAUDIO_CAPTURE_DEVICE`；两者都没有会直接报错——因为「弹了但没录」会得到一条静音，比报错更难查。
 - `latencyMs` 不写就找 `ANYAUDIO_MIDI_LATENCY_MS`，再没有就是 0，并给一条「跑 calibrate」的警告。
