@@ -198,9 +198,34 @@ function normalizeVst(spec, trackName) {
  * the software — hence `latencyMs`, measured once per rig by
  * `anyaudio_midiout calibrate`.
  */
-function normalizeHw(spec, trackName) {
+function normalizeHw(spec, trackName, externals = []) {
   if (spec === undefined || spec === null || spec === false) return undefined
-  const raw = typeof spec === 'string' ? { port: spec } : spec
+  let raw = typeof spec === 'string' ? { port: spec } : spec
+  // A rig configured in Settings → AnyAudio can be named instead of spelled out:
+  // hw: "SD-20" carries the port, the input and the measured latency at once.
+  // Anything written on the track still wins over the stored rig, so a score can
+  // say hw: { name: "SD-20", channel: 3 } and keep one channel different.
+  const wantedName = typeof spec === 'string'
+    ? spec.trim()
+    : (spec && typeof spec.name === 'string' ? spec.name.trim() : '')
+  if (wantedName) {
+    const rig = (Array.isArray(externals) ? externals : []).find(
+      (entry) => entry && typeof entry.name === 'string' && entry.name.toLowerCase() === wantedName.toLowerCase(),
+    )
+    if (rig) {
+      const fromRig = {
+        port: rig.port,
+        channel: rig.channel,
+        program: rig.program,
+        captureDevice: rig.device,
+        latencyMs: rig.latencyMs,
+        voices: rig.voices,
+      }
+      raw = typeof spec === 'string'
+        ? fromRig
+        : { ...fromRig, ...spec }
+    }
+  }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new ScoreError(`track "${trackName}": hw must be a MIDI port name or { port, channel, program }`)
   }
@@ -362,7 +387,7 @@ function cc7For(gainDb) {
  * Notes use seconds so the musical timeline and the video timeline share one
  * clock; no tempo map is needed.
  */
-export function compileScore(score, { sampleRate = 48000 } = {}) {
+export function compileScore(score, { sampleRate = 48000, externals = [] } = {}) {
   if (!score || typeof score !== 'object') throw new ScoreError('score must be a JSON object')
   if (!Array.isArray(score.tracks) || score.tracks.length === 0) throw new ScoreError('score.tracks must be a non-empty array')
   if (score.tracks.length > 16) throw new ScoreError('a score can use at most 16 tracks (one MIDI channel each)')
@@ -392,7 +417,7 @@ export function compileScore(score, { sampleRate = 48000 } = {}) {
     if (vst && track.hw) {
       throw new ScoreError(`track "${name}" asks for both vst and hw; a part has one sound source — keep one of them`)
     }
-    const hw = vst ? undefined : normalizeHw(track.hw, name)
+    const hw = vst ? undefined : normalizeHw(track.hw, name, externals)
     const external = Boolean(vst || hw)
     let channel
     if (external) {

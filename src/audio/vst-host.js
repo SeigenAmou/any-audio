@@ -57,7 +57,10 @@ function commonProgramFiles() {
 
 /** Where VST3 plugins live on this machine. `ANYAUDIO_VST_DIRS` (semicolon
  *  separated) comes first so a machine can point at a custom folder. */
-export function vstSearchDirs() {
+export function vstSearchDirs(configured = []) {
+  const fromConfig = (Array.isArray(configured) ? configured : [])
+    .filter((entry) => typeof entry === 'string' && entry.trim())
+    .map((entry) => resolve(entry.trim()))
   const extra = (process.env.ANYAUDIO_VST_DIRS || '')
     .split(';')
     .map((entry) => entry.trim())
@@ -70,7 +73,10 @@ export function vstSearchDirs() {
   ]
   const seen = new Set()
   const dirs = []
-  for (const dir of [...extra, ...standard]) {
+  // Configured folders come first: a person who typed a path is looking for a
+  // plugin the standard folders do not have, and the order is the answer to
+  // "which copy did it load".
+  for (const dir of [...fromConfig, ...extra, ...standard]) {
     const key = dir.toLowerCase()
     if (seen.has(key) || !existsSync(dir)) continue
     seen.add(key)
@@ -82,10 +88,10 @@ export function vstSearchDirs() {
 /** Walk the search dirs for .vst3 entries (file or bundle), skipping redirect
  *  stubs and the protected trees. Synchronous on purpose: the listing is small
  *  and the tool wants a plain array. */
-export function scanVstPlugins() {
+export function scanVstPlugins(configured = []) {
   const found = []
   const seen = new Set()
-  for (const root of vstSearchDirs()) {
+  for (const root of vstSearchDirs(configured)) {
     walk(root, 0, (path, bytes) => {
       const key = path.toLowerCase()
       if (seen.has(key)) return

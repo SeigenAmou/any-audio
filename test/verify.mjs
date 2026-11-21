@@ -1610,6 +1610,49 @@ await test('a hardware part claims no SoundFont channel and still compiles', asy
   assert(peakPolyphony([[0, 2, 60, 100], [0.5, 0.5, 64, 100], [1, 0.5, 67, 100]]) === 2, 'a note that ends as another starts is counted once')
 })
 
+await test('a named rig fills in the port, the input and the latency at once', async () => {
+  const rigs = [{ name: 'SD-20', port: 'SD-20 PART A', device: '麦克风 (3- USB Audio Device)', latencyMs: 65.92, voices: 64 }]
+  const named = compileScore({ tracks: [{ name: 'p', hw: 'SD-20', notes: [[0, 1, 'C4']] }] }, { externals: rigs })
+  const part = named.tracks[0]
+  assert(part.hw.port === 'SD-20 PART A', 'the stored port is used')
+  assert(part.hw.captureDevice === '麦克风 (3- USB Audio Device)', 'the stored input is used')
+  assert(part.hw.latencyMs === 65.92, 'the measured latency is used')
+  assert(part.hw.voices === 64, 'the voice count on the module is used')
+  // The track still wins: a rig is a default, not a lock.
+  const overridden = compileScore(
+    { tracks: [{ name: 'p', hw: { name: 'SD-20', channel: 3 }, notes: [[0, 1, 'C4']] }] },
+    { externals: rigs },
+  )
+  assert(overridden.tracks[0].hw.channel === 3, 'the track value wins over the rig')
+  assert(overridden.tracks[0].hw.port === 'SD-20 PART A', 'the rest still comes from the rig')
+  // A name that matches no rig is still a port name; that path must not break.
+  const plain = compileScore({ tracks: [{ name: 'p', hw: 'SD-20 PART B', notes: [[0, 1, 'C4']] }] }, { externals: rigs })
+  assert(plain.tracks[0].hw.port === 'SD-20 PART B', 'an unknown name is treated as a port')
+})
+
+await test('the settings keep VST folders and named hardware rigs', async () => {
+  const { normalizeConfig } = await import('../src/config.js')
+  const { config } = normalizeConfig({
+    sources: {
+      vstDirs: ['D:\\VST3', 'd:\\VST3', '   ', 'E:\\Plugins'],
+      external: [
+        { name: 'SD-20', port: 'SD-20 PART A', device: '29', latencyMs: 65.92, voices: 64 },
+        { name: 'SD-20', port: 'duplicate name' },
+        { name: 'no-port' },
+      ],
+    },
+  })
+  assert(config.sources.vstDirs.length === 2, 'duplicate folders collapse and blanks are dropped')
+  assert(config.sources.vstDirs[0] === 'D:\\VST3', 'the first spelling of a folder is kept')
+  assert(config.sources.external.length === 1, 'a rig without a port, or with a name already used, is dropped')
+  const rig = config.sources.external[0]
+  assert(rig.device === '29' && rig.latencyMs === 65.92 && rig.voices === 64, 'the measured numbers survive a save')
+  // Old configs have no such keys at all; they must read as empty, not undefined.
+  const { config: plain } = normalizeConfig({})
+  assert(Array.isArray(plain.sources.vstDirs) && plain.sources.vstDirs.length === 0, 'a config without VST folders reads as empty')
+  assert(Array.isArray(plain.sources.external) && plain.sources.external.length === 0, 'a config without rigs reads as empty')
+})
+
 await test('anyaudio_midiout lists ports and refuses a performance with nothing to play', async () => {
   const midiout = tools.get('anyaudio_midiout')
   const status = await midiout.execute({ action: 'status' }, exec)

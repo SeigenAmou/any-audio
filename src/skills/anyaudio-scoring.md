@@ -254,6 +254,7 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 ]}
 ```
 
+- **登记过的外部音源可以直接写名字**：在 设置 → AnyAudio → 音源 → 外部音源 里登记过「名字 + MIDI 端口 + 音频输入」之后，`"hw": "SD-20"` 就等于同时写了 `port`、`captureDevice`、`latencyMs`、`voices`。轨上再写的字段会覆盖登记值（比如只改 `channel`）。名字没登记就照旧当端口名用，不会报错。
 - 短形式 `hw` 只写端口名；长形式还可给 `channel`（0–15，这个端口自己的通道号）、`program`（音色号）、`captureDevice`、`latencyMs`、`voices`（模块的复音数）。
 - `captureDevice` 不写就找环境变量 `ANYAUDIO_CAPTURE_DEVICE`；两者都没有会直接报错——因为「弹了但没录」会得到一条静音，比报错更难查。
 - `latencyMs` 不写就找 `ANYAUDIO_MIDI_LATENCY_MS`，再没有就是 0，并给一条「跑 calibrate」的警告。

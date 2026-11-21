@@ -155,7 +155,7 @@ export const musicToolDefinition = finalizeTool({
     // not inside compileScore.
     const score = await resolveScorePresets(rawScore)
     const sampleRate = Math.round(clampSeconds(args.sampleRate ?? config.music.sampleRate, config.music.sampleRate)) || config.music.sampleRate
-    const compiled = compileScore(score, { sampleRate })
+    const compiled = compileScore(score, { sampleRate, externals: config.sources?.external ?? [] })
     const tailSec = clampSeconds(args.tailSec ?? config.music.tailSec, config.music.tailSec)
     const durationSec = clampSeconds(args.durationSec, compiled.durationSec + tailSec)
     const explicitFont = typeof args.font === 'string' && args.font.trim() ? args.font.trim() : ''

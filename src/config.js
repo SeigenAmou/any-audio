@@ -63,6 +63,13 @@ export const DEFAULTS = {
   sources: {
     extraDirs: [],
     scores: {},
+    // Where to look for VST3 instruments, beyond the standard system folders.
+    vstDirs: [],
+    // Named hardware rigs: a MIDI port (where the notes go) paired with an audio
+    // input (where the module's own output comes back). Naming the pair is what
+    // lets a score say hw: "SD-20" instead of repeating port, device and latency
+    // on every track.
+    external: [],
   },
 }
 
@@ -132,6 +139,88 @@ function normalizePackPriorities(value, issues) {
     if (!packId.trim()) continue
     if (state === 'priority' || state === 'normal') out[packId] = state
     else issues.push(`sfx.packs["${packId}"] is "${String(state)}"; expected "priority" or "normal"`)
+  }
+  return out
+}
+
+/**
+ * Extra VST3 folders, in the order they are searched. A person keeps a different
+ * tree from the system one (a portable install, a second drive), so these add to
+ * the standard folders rather than replacing them - the standard ones are where
+ * installers put plugins and are always worth a look.
+ */
+function normalizeVstDirs(value, issues) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    issues.push('sources.vstDirs must be an array of folder paths; it was ignored')
+    return []
+  }
+  const out = []
+  const seen = new Set()
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !entry.trim()) continue
+    const dir = entry.trim().slice(0, 400)
+    const key = dir.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(dir)
+    if (out.length >= 32) {
+      issues.push('sources.vstDirs keeps only the first 32 folders')
+      break
+    }
+  }
+  return out
+}
+
+/**
+ * Named hardware rigs. `name` is what a score says (`hw: "SD-20"`), `port` is the
+ * MIDI output the notes go to and `device` the audio input the module comes back
+ * on. `latencyMs` is measured once by calibrate; `voices` is the module's
+ * polyphony, which a score uses to warn when too many notes sound at once.
+ */
+function normalizeExternalSources(value, issues) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    issues.push('sources.external must be an array of { name, port, device }; it was ignored')
+    return []
+  }
+  const out = []
+  const seen = new Set()
+  for (const entry of value) {
+    if (!isPlainObject(entry)) {
+      issues.push('sources.external has an entry that is not an object; it was ignored')
+      continue
+    }
+    const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 60) : ''
+    const port = typeof entry.port === 'string' ? entry.port.trim().slice(0, 200) : ''
+    if (!name || !port) {
+      issues.push('sources.external entry needs both "name" and "port"; it was ignored')
+      continue
+    }
+    const key = name.toLowerCase()
+    if (seen.has(key)) {
+      issues.push(`sources.external has two entries named "${name}"; the later one was ignored`)
+      continue
+    }
+    seen.add(key)
+    const device = typeof entry.device === 'string' && entry.device.trim() ? entry.device.trim().slice(0, 200) : ''
+    const latency = Number(entry.latencyMs)
+    const voices = Number(entry.voices)
+    const channel = Number(entry.channel)
+    const program = Number(entry.program)
+    out.push({
+      name,
+      port,
+      ...(device ? { device } : {}),
+      ...(Number.isFinite(latency) && latency >= 0 ? { latencyMs: latency } : {}),
+      ...(Number.isFinite(voices) && voices > 0 ? { voices: Math.round(voices) } : {}),
+      ...(Number.isInteger(channel) ? { channel: Math.max(0, Math.min(15, channel)) } : {}),
+      ...(Number.isInteger(program) ? { program: Math.max(0, Math.min(127, program)) } : {}),
+    })
+    if (out.length >= 32) {
+      issues.push('sources.external keeps only the first 32 rigs')
+      break
+    }
   }
   return out
 }
@@ -234,7 +323,12 @@ export function normalizeConfig(input) {
       output: {
         dir: typeof outputRaw.dir === 'string' ? outputRaw.dir.trim() : '',
       },
-      sources: { extraDirs, scores },
+      sources: {
+        extraDirs,
+        scores,
+        vstDirs: normalizeVstDirs(sourcesRaw.vstDirs, issues),
+        external: normalizeExternalSources(sourcesRaw.external, issues),
+      },
     },
   }
 }

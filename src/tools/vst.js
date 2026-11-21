@@ -282,7 +282,8 @@ export const vstToolDefinition = finalizeTool({
       const query = String(args.query ?? '').trim().toLowerCase()
       const limitArg = Number(args.limit)
       const limit = Number.isFinite(limitArg) && limitArg > 0 ? Math.min(Math.floor(limitArg), 500) : 60
-      const all = scanVstPlugins().map((entry) => ({ name: friendlyName(entry.path), path: entry.path, bytes: entry.bytes }))
+      const { config } = await readConfig()
+      const all = scanVstPlugins(config.sources?.vstDirs ?? []).map((entry) => ({ name: friendlyName(entry.path), path: entry.path, bytes: entry.bytes }))
       const matched = query
         ? all.filter((entry) => entry.path.toLowerCase().includes(query) || entry.name.toLowerCase().includes(query))
         : all
