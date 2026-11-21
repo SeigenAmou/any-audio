@@ -87,6 +87,9 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
     return { channels: emptyPair(frames), frames, peakDb: null, rmsDb: null, port, warnings: ['the part has no notes'] }
   }
   const device = captureDeviceFor(track)
+  // An index may arrive as "29". The worker treats a real number as an index and
+  // anything else as a name, so a numeric string would match no input at all.
+  const deviceArg = /^\d+$/.test(String(device)) ? Number(device) : device
   const configuredLatency = Number(process.env.ANYAUDIO_MIDI_LATENCY_MS)
   const latencyMs = Number.isFinite(track.hw.latencyMs)
     ? track.hw.latencyMs
@@ -106,7 +109,7 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       program: track.hw.program,
       controls: controlsForHw(track),
       durationSec: frames / sampleRate,
-      capture: { device, durationSec: frames / sampleRate, trimLatencyMs: latencyMs, out },
+      capture: { device: deviceArg, channels: 2, sampleRate, durationSec: frames / sampleRate, trimLatencyMs: latencyMs, out },
       timeoutMs: timeoutMs ?? Math.round((frames / sampleRate) * 1000) + 60000,
     })
     const capture = reply.capture ?? {}

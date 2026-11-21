@@ -110,7 +110,7 @@ def resolve_input(sd, wanted):
     needle = str(wanted or "").lower()
     if not needle:
         raise ValueError("capture needs a device")
-    exact = [(index, info) for index, info, _ in inputs if info["name"].lower() == needle]
+    exact = [(index, info, api) for index, info, api in inputs if info["name"].lower() == needle]
     partial = [(index, info, api) for index, info, api in inputs if needle in info["name"].lower()]
     candidates = exact or partial
     if not candidates:
