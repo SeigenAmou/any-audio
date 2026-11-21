@@ -153,7 +153,12 @@ export function apply(ctx, config = {}) {
       try {
         if (typeof ctx.inject === 'function') {
           try {
-            ctx.inject(['webServer'], (sctx) => registerAnyAudioRoutes(sctx, { log }))
+            ctx.inject(['webServer'], (sctx) => {
+              const { dispose } = registerAnyAudioRoutes(sctx, { log })
+              if (typeof sctx.effect === 'function' && typeof dispose === 'function') {
+                sctx.effect(() => dispose, 'any-audio: settings routes')
+              }
+            })
             log('settings bridge waits for the web server')
           } catch {
             const { dispose } = registerAnyAudioRoutes(ctx, { log })
