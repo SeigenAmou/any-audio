@@ -197,7 +197,7 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 - 23 个 Roland 插件能出声：JUNO-106、JUNO-60、JUPITER-4/8、JV-1080、JX-3P、SH-101、PROMARS、SYSTEM-100/8、TB-303、全部 SRX 与 EARTH 系列。
 - **TR-808/909/707/727/606 能加载、参数齐全，但渲染全程静音**，16 个通道、24–84 音域、program change 之后都是 0.0000——这些鼓机在本机未授权。要鼓就用 SoundFont 的鼓组，别在 TR 上耗时间。
-- Padshop、Retrologue、ZENOLOGY、Galaxias **加载会一直挂着**（超时 25 秒被强制杀掉）。`TIMEOUT` 是结论，不是失败重试的信号。
+- Padshop、Retrologue、ZENOLOGY、Galaxias **加载会一直挂着**（超时 25 秒被强制杀掉）。`TIMEOUT` 是结论，不是失败重试的信号。**根因多半是许可证失效**：这类插件带授权检查，许可证过期或没有授权时它会弹出激活窗口等人处理，headless 里没人点就一直等下去。本机 Padshop 的许可已到期；续上之后它大概率能用——遇到 `TIMEOUT` 先查许可状态，不要直接把这些插件写成「永久不可用」。
 - NeuralNote、Chord Analyzer MIDI 加载不了；JC-120、RE-201 这类效果器没有可播放的音符。
 
 所以：VST 用在「音色本身是主角」的地方——一段合成器主线、一个 303 低音、一个 SRX 钢琴。铺底、和声、鼓这些量大又不挑音色的部分继续用 `anyaudio_music` 的 SoundFont，速度快、可逐轨测量、能导出 .mid。一次单独的 `render` 只驱动一个插件；要多个插件就调多次，拿到几条音频再在工程里叠。
