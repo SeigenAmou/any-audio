@@ -18,7 +18,7 @@ import { projectDir } from '../project/paths.js'
 import { readConfig } from '../config.js'
 import { describeVst, isVst2Plugin, renderVst, renderVst2, scanVstLibrary, vstStatus } from '../audio/vst-host.js'
 import { encodeMidiFile } from '../audio/midi-file.js'
-import { cleanState, findPreset, importPreset, listPresets, presetDir, removePreset, savePreset } from '../audio/vst-preset.js'
+import { cleanState, findPreset, importPreset, listPresets, presetDir, removePreset, resolveScorePresets, savePreset, scanPresetFiles } from '../audio/vst-preset.js'
 import {
   deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace,
   requireProjectId, scratchPath, textRenderer, workspaceRootOf,
@@ -128,10 +128,11 @@ export const vstToolDefinition = finalizeTool({
       query: { type: 'string', description: 'With action "scan": only list plugins whose name or path contains this text.' },
       output: { type: 'string', description: 'Optional extra copy at this path.' },
       preset: { type: 'string', description: 'A saved patch name (from action "preset"). With action "render" it supplies the plugin path and the parameter values, so "plugin" and "params" can be left out.' },
-      presetAction: { type: 'string', enum: ['save', 'list', 'show', 'remove', 'import'], description: 'With action "preset": what to do with the saved patches. Default "list". "import" registers a preset file the plugin itself wrote (.vstpreset, .fxp, .fxb) — the way to reach knobs the plugin keeps out of its parameter list.' },
+      presetAction: { type: 'string', enum: ['save', 'list', 'show', 'remove', 'import', 'scan'], description: 'With action "preset": what to do with the saved patches. Default "list". "import" registers a preset file the plugin itself wrote (.vstpreset, .fxp, .fxb) — the way to reach knobs the plugin keeps out of its parameter list.' },
       name: { type: 'string', description: 'With action "preset": the patch name to save, show or remove.' },
       note: { type: 'string', description: 'With action "preset": a remark stored next to the patch, e.g. "only the chorus, no reverb".' },
       presetFile: { type: 'string', description: 'With presetAction "import": the .vstpreset, .fxp or .fxb file the plugin saved. With action "render": load that file into the plugin for this one render, without registering it.' },
+      presetQuery: { type: 'string', description: 'With presetAction "scan": only list preset files whose plugin, vendor or name contains this text.' },
       limit: { type: 'number', description: 'With action "scan": max rows, default 60.' },
     },
     required: ['action'],
@@ -201,6 +202,11 @@ export const vstToolDefinition = finalizeTool({
         ].join('\n')
       }
       if (value.action === 'preset') {
+        if (value.presetAction === 'scan') {
+          const rows = (value.files ?? []).map((entry) => `- ${entry.name} · ${entry.vendor ? entry.vendor + ' / ' : ''}${entry.plugin} [${entry.format}]\n    ${entry.file}`)
+          const head = `${value.found} preset file(s) under ${(value.dirs ?? []).join(', ')}${value.truncated ? ' (stopped early — narrow the query)' : ''}`
+          return [head, ...rows].join('\n')
+        }
         if (value.presetAction === 'save') {
           return value.state
             ? `Saved patch "${value.name}" → ${value.saved} (state file ${value.state})`
@@ -238,6 +244,14 @@ export const vstToolDefinition = finalizeTool({
     }
 
     if (action === 'preset') {
+      const early = String(args.presetAction ?? '').trim().toLowerCase()
+      if (early === 'scan') {
+        const found = await scanPresetFiles({
+          query: String(args.presetQuery ?? '').trim(),
+          limit: Number.isFinite(Number(args.limit)) && Number(args.limit) > 0 ? Math.min(400, Math.round(Number(args.limit))) : 400,
+        })
+        return { ok: true, action, presetAction: 'scan', ...found }
+      }
       const sub = String(args.presetAction ?? 'list').trim().toLowerCase() || 'list'
       if (sub === 'list') {
         const { presets, broken } = await listPresets()

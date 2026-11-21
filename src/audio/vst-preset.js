@@ -204,6 +204,84 @@ export async function importPreset({ name, plugin, file, note }) {
   })
 }
 
+// Where the plugins themselves put their presets. A person who saves a patch
+// from the plugin window has no reason to know the path either — Steinberg's
+// convention is `Documents/VST3 Presets/<vendor>/<plugin>/<name>.vstpreset`,
+// and every other host that speaks .vstpreset uses the same one.
+export function presetSearchDirs() {
+  const home = homedir()
+  const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming')
+  const dirs = [
+    join(home, 'Documents', 'VST3 Presets'),
+    join(home, 'OneDrive', 'Documents', 'VST3 Presets'),
+    join(appData, 'VST3 Presets'),
+  ]
+  const extra = String(process.env.ANYAUDIO_VST_PRESET_DIRS ?? '')
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  return [...new Set([...dirs, ...extra])]
+}
+
+const MAX_SCAN_FILES = 2000
+const MAX_SCAN_DEPTH = 5
+
+/**
+ * Every preset file the plugins left on disk, as {file, name, vendor, plugin, format}.
+ * Read-only and bounded: a host that dumps ten thousand presets must not stall
+ * the tool, so the walk stops at MAX_SCAN_FILES and says so.
+ */
+export async function scanPresetFiles({ dirs = presetSearchDirs(), query = '', limit = 400 } = {}) {
+  const wanted = String(query ?? '').trim().toLowerCase()
+  const files = []
+  let truncated = false
+
+  async function walk(dir, depth) {
+    if (files.length >= MAX_SCAN_FILES) {
+      truncated = true
+      return
+    }
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith('.')) continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (depth > 0) await walk(full, depth - 1)
+        continue
+      }
+      const format = stateFormatOf(full)
+      if (!format) continue
+      files.push({ file: full, format })
+      if (files.length >= MAX_SCAN_FILES) {
+        truncated = true
+        return
+      }
+    }
+  }
+
+  for (const dir of dirs) await walk(dir, MAX_SCAN_DEPTH)
+
+  const rows = files.map(({ file, format }) => {
+    // `<root>/<vendor>/<plugin>/<preset>` — the tail is the plugin, the one
+    // before it the vendor; both are only labels, the file is the truth.
+    const parts = file.split(/[\\/]+/).filter(Boolean)
+    const name = basename(file, extname(file))
+    const plugin = parts.length >= 2 ? parts[parts.length - 2] : ''
+    const vendor = parts.length >= 3 ? parts[parts.length - 3] : ''
+    return { file, name, plugin, vendor, format }
+  })
+
+  const filtered = wanted
+    ? rows.filter((row) => `${row.name} ${row.plugin} ${row.vendor}`.toLowerCase().includes(wanted))
+    : rows
+  return { dirs, files: filtered.slice(0, Math.max(1, limit)), found: filtered.length, scanned: files.length, truncated }
+}
+
 export async function removePreset(name) {
   const found = await findPreset(name)
   if (!found) return null

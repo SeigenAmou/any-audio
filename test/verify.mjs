@@ -1783,6 +1783,35 @@ await test('the plugin scan reads the PE header instead of guessing the bitness'
   assert(library.plugins.every((entry) => entry.format === 'vst3' || entry.format === 'vst2'), 'every plugin is labelled VST3 or VST2')
 })
 
+await test('preset files the hosts left behind can be listed without opening the plugins', async () => {
+  const root = join(tmpDir, 'preset-shelf')
+  const vendor = join(root, 'Wizoo _ Steinberg')
+  const plugin = join(vendor, 'Virtual Electric Guitar_64')
+  await mkdir(plugin, { recursive: true })
+  await writeFile(join(plugin, 'Clean SM57.vstpreset'), 'VST3' + '0'.repeat(60))
+  await writeFile(join(plugin, 'Dirty Overdrive.fxp'), 'CcnK' + '0'.repeat(20))
+  await writeFile(join(plugin, 'readme.txt'), 'not a preset')
+
+  const { scanPresetFiles } = await import('../src/audio/vst-preset.js')
+  const all = await scanPresetFiles({ dirs: [root] })
+  assert(all.found === 2, `two preset files are found, not ${all.found}`)
+  const clean = all.files.find((row) => row.name === 'Clean SM57')
+  assert(clean, 'a .vstpreset is listed')
+  assert(clean.format === 'vstpreset', `the format is named, not "${clean.format}"`)
+  assert(clean.plugin === 'Virtual Electric Guitar_64', `the plugin is read from the folder, not "${clean.plugin}"`)
+  assert(clean.vendor === 'Wizoo _ Steinberg', `the vendor is read from the folder, not "${clean.vendor}"`)
+  assert(all.files.every((row) => row.format === 'vstpreset' || row.format === 'fxp' || row.format === 'fxb'),
+    'a text file in the same folder is not a preset')
+
+  const filtered = await scanPresetFiles({ dirs: [root], query: 'sm57' })
+  assert(filtered.found === 1 && filtered.files[0].name === 'Clean SM57', 'the query narrows the list by name')
+
+  const missing = await scanPresetFiles({ dirs: [join(root, 'nowhere')] })
+  assert(missing.found === 0 && missing.scanned === 0, 'a folder that does not exist is not an error')
+
+  await rm(root, { recursive: true, force: true })
+})
+
 if (!hadAnyAudioDir) {
   const leftover = await readdir(anyaudioDir).catch(() => [])
   if (leftover.length === 0) await rm(anyaudioDir, { recursive: true, force: true })
