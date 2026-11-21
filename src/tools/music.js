@@ -1,8 +1,8 @@
-import { basename, dirname, join } from 'node:path'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { planFonts, resolveConfiguredDefault } from '../audio/banks.js'
 import { compileScore } from '../audio/score.js'
-import { encodeMidiFile } from '../audio/midi-file.js'
+import { encodeMidiFile, parseMidiFile, scoreFromMidi } from '../audio/midi-file.js'
 import { renderScore } from '../audio/renderers.js'
 import { renderMixWithParts, renderVstStem, vstTracksOf } from '../audio/vst-track.js'
 import { hwTracksOf, renderHwStem } from '../audio/hw-track.js'
@@ -11,6 +11,20 @@ import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
 import { deliverCopy, deliveryPath, finalizeTool, nowStamp, readJsonParam, relativeToWorkspace, requireProjectId, resolveOutputPath, scratchPath, seconds as clampSeconds, textRenderer, workspaceRootOf, writeWavFile } from './shared.js'
+
+/** `midi:` is the read that anyaudio_midi action "import" does, without the round trip through a .json file: a .mid is already an arrangement, so hand it straight to the renderer. */
+export async function scoreFromMidiPath(value, workspaceRoot) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) throw new Error('pass "midi": the .mid file to render')
+  const path = isAbsolute(text) ? text : resolve(workspaceRoot, text)
+  let buffer
+  try {
+    buffer = await readFile(path)
+  } catch (error) {
+    throw new Error(`cannot read ${path}: ${error.message}`)
+  }
+  return scoreFromMidi(parseMidiFile(buffer), { title: basename(path, extname(path)) })
+}
 
 function describeTracks(tracks) {
   return tracks
@@ -77,6 +91,7 @@ export const musicToolDefinition = finalizeTool({
     type: 'object',
     properties: {
       score: { oneOf: [{ type: 'object' }, { type: 'string' }], description: 'Score object as described above. A path to a .json file holding the same object is also accepted and is the better choice for long scores — keep the notes in a file and pass the path instead of inlining thousands of numbers.' },
+      midiFile: { type: 'string', description: 'A .mid file to render instead of "score": it is read into a score here (same as anyaudio_midi action "import") and rendered as-is. Pass exactly one of "score" and "midiFile" ("midi" is a different flag: asking for a .mid export beside the WAV).' },
       projectId: { type: 'string', description: 'The clip bay project this music belongs to. Required: run anyaudio_project mode:"create" first when the task has no project yet. The rendered music is added to the project as material and placed on its own track.' },
       trackName: { type: 'string', description: 'Name of the track to create for this music, default the score title. Ignored with stems:true, where each score track gets its own project track named after it.' },
       startSec: { type: 'number', description: 'Where the music starts on the project timeline, default 0.' },
@@ -92,7 +107,7 @@ export const musicToolDefinition = finalizeTool({
       midi: { oneOf: [{ type: 'boolean' }, { type: 'string' }], description: 'Also write the arrangement as a standard MIDI file: true writes .anyaudio/out/score-<stamp>.mid, or pass a path. Use it when the person wants to edit the parts in a DAW, swap a timbre, or finish the performance by hand. The .mid is an arrangement, not audio — it is not added to the project and the mixer never plays it.' },
       midiBpm: { type: 'number', description: 'The tempo written into the exported .mid, default 120. The score clock is in seconds, so the tempo only decides how many ticks a second is worth; it does not change what is heard.' },
     },
-    required: ['score', 'projectId'],
+    required: ['projectId'],
   },
   output: {
     schema: {
@@ -149,7 +164,12 @@ export const musicToolDefinition = finalizeTool({
     const workspaceRoot = await workspaceRootOf(exec)
     const projectId = requireProjectId(args, 'anyaudio_music')
     const { config } = await readConfig()
-    const rawScore = await readJsonParam(args.score, 'score', { workspaceRoot })
+    if (args.midiFile !== undefined && args.score !== undefined) {
+      throw new Error('pass "score" or "midi", not both: "midi" is shorthand for reading a .mid into a score')
+    }
+    const rawScore = args.midiFile !== undefined
+      ? await scoreFromMidiPath(args.midiFile, workspaceRoot)
+      : await readJsonParam(args.score, 'score', { workspaceRoot })
     // A track may point at a saved patch instead of repeating a plugin path and
     // two hundred parameter values. Resolution is async, so it happens here and
     // not inside compileScore.

@@ -1202,6 +1202,36 @@ await test('an unknown instrument names what is close instead of pointing at a l
   assert(resolveInstrument('piano').program === 0, 'a known instrument still resolves')
 })
 
+await test('anyaudio_music takes a .mid file straight, without a json detour', async () => {
+  const { encodeMidiFile } = await import('../src/audio/midi-file.js')
+  const { scoreFromMidiPath } = await import('../src/tools/music.js')
+  const dir = await mkdtemp(join(tmpdir(), 'anyaudio-mid-'))
+  try {
+    const score = {
+      title: 'handoff',
+      tracks: [
+        { name: 'bass', instrument: 'bass', notes: [[0, 1, 'E2', 100], [1, 1, 'G2']] },
+        { name: 'kick', drums: true, notes: [[0, 0.2, 36, 110]] },
+      ],
+    }
+    const file = join(dir, 'handoff.mid')
+    await writeFile(file, encodeMidiFile(compileScore(score), { bpm: 120, title: score.title }))
+    // A relative path is read from the workspace, an absolute one as given.
+    const read = await scoreFromMidiPath(file, dir)
+    assert(read.tracks.length === 2, `expected 2 parts, got ${read.tracks.length}`)
+    const bass = read.tracks.find((track) => track.name === 'bass')
+    assert(bass && bass.program === 33, `the program travel with the file (got ${bass?.program})`)
+    const kit = read.tracks.find((track) => track.drums)
+    assert(kit !== undefined, 'the drum channel comes back as a drum part')
+    assert(read.durationSec > 0, 'the score carries its length')
+    let missing = ''
+    try { await scoreFromMidiPath(join(dir, 'nope.mid'), dir) } catch (error) { missing = error.message }
+    assert(/cannot read/.test(missing), `a missing file names itself (${missing})`)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 await test('a score survives a round trip through a MIDI file', async () => {
   const { encodeMidiFile, parseMidiFile, scoreFromMidi } = await import('../src/audio/midi-file.js')
   const score = {
