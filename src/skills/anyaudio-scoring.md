@@ -92,6 +92,8 @@
 
 - 同一个 score 里，不同轨道可以用不同 SoundFont：在轨道上写 `source`（音源 id 或 `.sf2` 路径）。不写就用默认音源（`action: "use"` 设置的那个，没设过就用装好的默认库）；写 `"auto"` 让插件按乐器族评分自动挑最好的已安装音源（1–10 分，可用 `anyaudio_sources` 的 `list` 查看各库分数）。
 - 典型用法：钢琴用专用钢琴库、电吉他用吉他库、贝斯和鼓用默认库。插件会自动给每套音源分配不冲突的 bank offset，不需要手工计算。
+**鼓组的键不是随便一个都响**。sf2 的鼓组只映射它自己列出的键：GeneralUser-GS 覆盖 0–127，而 Roland SC-88 只有 11 个（28、35、36、38、39、40、42、46、49、51、57）。拿 FL 采样器的鼓轨（常见 48–63）喂 SC-88，整轨会**静音**——渲染器现在会提前说清楚：`"X" answers only 11 drum key(s) (…) and none of this track's keys (…) is among them`，或部分缺失时 `has no drum sample for key(s) 48 — those notes will be silent`。看到这种警告就换带鼓的库（`font` 指向默认库），或把音符挪到它有的键上，别交付一条静音的鼓轨。另：鼓轨写 `source` 不会生效，鼓永远取 `font` 指定的那套库。
+
 - **鼓组永远来自默认音源**（第一套加载的库）：其它库的鼓组不会被使用。要换鼓就把带鼓的库作为 `font` 传进来；默认库没有鼓时鼓轨不会响。
 - 装新音源：`anyaudio_sources` 的 `install`（按 id 下载推荐音源）或 `fromPath`（本地文件）。音源装进整台机器共用的音源库（`~/.dsh/anyaudio/fonts`），所有项目与 Agent 会话共用同一份，不用每个项目重装。想让某个库成为「不写 `source` 时的默认音源」，用 `action: "use"`（会写入 `music.font` 配置）。许可证不允许再分发的音源由用户自备，不要下载来源不明的文件。
 
@@ -259,6 +261,10 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 登记之后，乐谱轨写 `{"name":"keys","vst":{"preset":"srx piano 华丽"}}` 就会把那个文件交给插件（先加载文件，再应用轨上显式写的 `params`，所以「预设 + 改一颗旋钮」是成立的）。也可以不登记、一次性用：`render` 时直接传 `presetFile`。
 
 四条要点：①**文件原样交给插件，这边不解析**——它属于插件，改动它是插件的职责；②加载失败不会静音或崩掉，回执的 `warnings` 里写明 `state: …` 是哪一步失败，该声部照常用默认音色渲染；③`.vstpreset` 是 VST3 的格式，`.fxp`/`.fxb` 是 VST2 的，选错了插件会拒绝，报错会告诉你；④**文件从哪来**：让用户在任意能打开插件窗口的宿主里（FL Studio、Cubase、Maschine 都行）把音色调好，另存为预设——VST3 存成 `.vstpreset`、VST2 存成 `.fxp`（单个音色）或 `.fxb`（整个音色库），然后把路径发过来。不要替用户猜某个插件「应该」怎么调，那是只有窗口里才看得见的东西。
+
+**没有用户预设时，可以自己写一个 `.fxp`**（只限 64 位 VST2）：`anyaudio_vst {action:"preset", presetAction:"write", plugin:"<dll>", name:"srx piano 夜里", params:{"MASTER LEVEL":0.25}}` 会读出插件当前全部参数、改掉你点名的几项、写成标准 `.fxp` 并登记成同名预设。参数名写错会报 `"X" is not a parameter of …; closest names: …`，照它给的最近名字改。也有限度：`write` 只能动**参数表里有的东西**，插件窗格里的宏、页签、patch 选择仍然属于用户——那部分只能等用户在窗口里存 `.vstpreset` 再 `presetAction:"import"`。**别给 VST3 写 `.fxp`**，格式不通用。
+
+**已经存在的预设文件可以先找出来**：`anyaudio_vst {action:"preset", presetAction:"scan"}` 扫 `Documents/VST3 Presets`、`%APPDATA%/VST3 Presets`（可用 `ANYAUDIO_VST_PRESET_DIRS` 追加），按插件列名字；设置页「插件预设」把同一批文件**按插件分组**摆出来，每行给一个「导入」。同一插件下重名的文件导入时自动变成「名字 2」。文件名只是标签，真身是那个文件。
 
 **两条通道的区别要说清，别混用**：VST2 声部送进去的是 MIDI 文件，所以谱面的 `automation`（CC 事件）真的会到达插件——插件若开了 MIDI Learn / 固定 CC 映射（例如 SRX 的 CC7 音量、CC91 混响发送），可以用 `{"track":"keys","controller":7,"points":[[0,127],[4,40]]}` 这样推它。VST3 声部走 pedalboard，插件只收到音频缓冲、收不到 MIDI，所以对 VST3 来说参数只有两条路：`params`（参数名，`action:"info"` 里能查到）和预设文件。
 

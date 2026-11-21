@@ -7,10 +7,11 @@ import { compileScore, parsePitch } from '../src/audio/score.js'
 import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
 import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
-import { planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
+import { drumKeys, planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
 import { peakPolyphony } from '../src/audio/hw-track.js'
 import { listManuals, manualSlug, readManual, removeManual, saveManual } from '../src/audio/manuals.js'
 import { peInfo, scanVstLibrary, vst2Kind } from '../src/audio/vst-host.js'
+import { encodeFxp } from '../src/audio/vst-preset.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
 import { registerAllTools } from '../src/tools/index.js'
 import { findFfmpeg, runFfmpeg } from '../src/tools/shared.js'
@@ -1771,6 +1772,39 @@ await test('a manual about a source lives under one slug no matter how it is spe
     else process.env.ANYAUDIO_MANUALS = previous
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+await test('a drum kit only answers the keys its own instruments map', () => {
+  // A GM drum preset wraps every key, but the audible keys are the instruments'
+  // ranges underneath. A bank that answers a handful of keys renders the rest
+  // as silence, so the list has to be exact.
+  const bank = {
+    presets: [
+      {
+        isGMGSDrum: true,
+        bankMSB: 128,
+        zones: [
+          { keyRange: { min: 0, max: 127 }, _instrument: { zones: [{ keyRange: { min: 36, max: 36 } }, { keyRange: { min: 38, max: 38 } }] } },
+          { keyRange: { min: 49, max: 49 }, _instrument: { zones: [] } },
+        ],
+      },
+      { isGMGSDrum: false, bankMSB: 0, zones: [{ keyRange: { min: 0, max: 127 } }] },
+    ],
+  }
+  const keys = drumKeys(bank)
+  assert([...keys].sort((a, b) => a - b).join(',') === '36,38,49', `expected 36,38,49 — got ${[...keys].sort((a, b) => a - b).join(',')}`)
+  assert(drumKeys({ presets: [] }).size === 0, 'a bank without drums answers no keys')
+})
+
+await test('a written .fxp is the bytes a VST2 plugin reads back', () => {
+  const bytes = encodeFxp({ name: 'night', values: [0.25, 0.5, 1] })
+  assert(bytes.subarray(0, 4).toString('latin1') === 'CcnK', 'the outer chunk is CcnK')
+  assert(bytes.readInt32BE(4) === bytes.length - 8, 'the outer length covers everything after it')
+  assert(bytes.subarray(8, 12).toString('latin1') === 'FxCk', 'the payload is a FxCk program chunk')
+  assert(bytes.readInt32BE(24) === 3, 'the program says how many values follow')
+  assert(bytes.subarray(28, 33).toString('latin1') === 'night', 'the program carries a name')
+  assert(Math.abs(bytes.readFloatBE(56) - 0.25) < 1e-6, 'the first value is where the float table starts')
+  assert(bytes.length === 8 + 48 + 12, 'eight bytes of wrapper, forty-eight of header, four per value')
 })
 
 await test('the plugin scan reads the PE header instead of guessing the bitness', () => {

@@ -372,7 +372,22 @@ export const musicToolDefinition = finalizeTool({
       for (const warning of part.warnings ?? []) warnings.push(`"${part.name}" (${part.port}): ${warning}`)
     }
     if (args.durationSec !== undefined && compiled.durationSec > durationSec + 0.001) {
-      warnings.push(`score runs to ${compiled.durationSec.toFixed(2)}s but durationSec is ${durationSec.toFixed(2)}s — notes past the end are cut; add tail or end the music earlier`)
+      // Say what is lost, not only that something is: a person comparing two
+      // takes otherwise reads a cut note as a note the other take added.
+      let cut = 0
+      let lastStart = 0
+      for (const track of compiled.tracks) {
+        for (const note of track.notes) {
+          if (note.start + note.duration > durationSec + 0.001) {
+            cut += 1
+            if (note.start > lastStart) lastStart = note.start
+          }
+        }
+      }
+      warnings.push(
+        `score runs to ${compiled.durationSec.toFixed(2)}s but durationSec is ${durationSec.toFixed(2)}s — `
+        + `${cut} note(s) are cut, the last starting at ${lastStart.toFixed(2)}s; add tail or end the music earlier`,
+      )
     }
     if (rendered.brokenSamples > 0) warnings.push(`${rendered.brokenSamples} non-finite samples were zeroed`)
     // The balance check runs on every call now, because the measurement does. It

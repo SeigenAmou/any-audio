@@ -22,6 +22,33 @@ export function hasDrumKit(bank) {
 }
 
 /**
+ * The MIDI keys this bank's drum kit actually answers.
+ *
+ * A GM drum kit is one preset whose zones point at instruments; the audible
+ * keys are the instruments' own key ranges, not the preset's 0..127 wrapper.
+ * A bank that maps only a handful of keys (Roland SC-88 answers 28, 35, 36,
+ * 38, 39, 40, 42, 46, 49, 51 and 57) renders every other key as silence, and
+ * nothing in the render says so — hence this list.
+ */
+export function drumKeys(bank) {
+  const keys = new Set()
+  const add = (range) => {
+    if (!range) return
+    const low = Math.max(0, Number.isFinite(range.min) ? range.min : 0)
+    const high = Math.min(127, Number.isFinite(range.max) ? range.max : 127)
+    for (let key = low; key <= high; key++) keys.add(key)
+  }
+  for (const preset of (bank.presets ?? []).filter((item) => item.isGMGSDrum === true || (item.bankMSB ?? 0) === 120)) {
+    for (const zone of preset.zones ?? []) {
+      const inner = zone?._instrument?.zones ?? []
+      if (inner.length) for (const child of inner) add(child.keyRange)
+      else add(zone.keyRange)
+    }
+  }
+  return keys
+}
+
+/**
  * Smallest offset that keeps every preset inside bank 0..127 and avoids the
  * (bank, program) pairs already taken by earlier fonts. Presets are checked by
  * their own bank number, so a font that spreads across many banks still lands
@@ -225,6 +252,21 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
       const program = pickProgram(defaultBank.bank, 0)
       layout.set(track.name, { source: defaultEntry.id, fontId: defaultEntry.id, offset: 0, program: track.program })
       if (program === null && !hasDrumKit(defaultBank.bank)) warnings.push(`track "${track.name}" is a drum track but the default font has no drum kit`)
+      // Drums always come from the first loaded bank, so a `source` on a drum
+      // track changes nothing; saying that is kinder than dropping it silently.
+      if (requested && requested !== 'auto') {
+        warnings.push(`track "${track.name}" sets source "${requested}", but drums always come from the first loaded font ("${defaultEntry.name}") — render this kit in a separate call with "font" if you need it`)
+      }
+      const keys = drumKeys(defaultBank.bank)
+      if (keys.size > 0) {
+        const wanted = [...new Set(track.notes.map((note) => note.midi))].sort((a, b) => a - b)
+        const missing = wanted.filter((key) => !keys.has(key))
+        if (missing.length === wanted.length) {
+          warnings.push(`track "${track.name}" will be silent: "${defaultEntry.name}" answers only ${keys.size} drum key(s) (${[...keys].sort((a, b) => a - b).join(', ')}) and none of this track's keys (${wanted.join(', ')}) is among them`)
+        } else if (missing.length > 0) {
+          warnings.push(`track "${track.name}": "${defaultEntry.name}" has no drum sample for key(s) ${missing.join(', ')} — those notes will be silent. It answers ${keys.size} key(s)`)
+        }
+      }
       continue
     }
     if (requested === 'auto') {
