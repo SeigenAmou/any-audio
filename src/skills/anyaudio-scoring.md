@@ -307,6 +307,11 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 - 短形式 `hw` 只写端口名；长形式还可给 `channel`（0–15，这个端口自己的通道号）、`program`（音色号）、`captureDevice`、`latencyMs`、`voices`（模块的复音数）。
 - `captureDevice` 不写就找环境变量 `ANYAUDIO_CAPTURE_DEVICE`；两者都没有会直接报错——因为「弹了但没录」会得到一条静音，比报错更难查。
 - `latencyMs` 不写就找 `ANYAUDIO_MIDI_LATENCY_MS`，再没有就是 0，并给一条「跑 calibrate」的警告。
+
+- **每次录硬件声部，起点是量出来的，不是填出来的**：渲染时会在音乐开始前 0.4 秒先发一个很短的测量音（力度 110、音高 84），它单独落在引子里；录音回来后在开头 1 秒内找到第一个声音的位置，按它把整条采集往前裁。所以 `latencyMs` 只是「测量音没回来时的兜底」，正常情况不用手填、也不用先跑 `calibrate`。回执里的 `alignMs` 是这次实际裁掉多少（含引子），拿它和 `latencyMs` 对一下就知道线有没有变。
+- 测量音没回来时会警告 `the measuring note did not come back, so the take was trimmed by the latency setting`——这时要么模块静音/通道不对，要么 `latencyMs` 该重测。
+- 想关掉自动对齐（比如你自己的宿主已经对齐过），写 `"hw": {"port": "…", "align": false}`。
+- **为什么必须对齐**：MIDI 是立刻离开的，但「模块出声」到「录音流开始写」之间有一段固定滞后（实测 20–25 ms），它和 `latencyMs` 不是一回事。这段偏差在 120 BPM 下是 1/5 个十六分音符，硬件声部会整条听起来「拖」在人声或软件音源后面。
 - 一个声部只能有一个音源：写了 `hw` 又写 `vst` 会被拒绝。
 - **复音上限**：写进 `voices`（如 `"hw": {"port": "SD-20 PART A", "voices": 64}`），谱面同时发声数超过它时会给出警告——超出部分的音是静默消失的，不报错，所以这件事必须由消息说明，不能靠听。不写 `voices` 就只在同时超过 64 个音时提醒一次「上限未知」，别把 64 当成所有模块的常量。
 - 硬件声部不占 SoundFont 的通道，也不会生成 bank/program 事件；全是硬件声部的谱子不需要装任何音色库。

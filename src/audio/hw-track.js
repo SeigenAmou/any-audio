@@ -99,6 +99,133 @@ function fitChannels(channels, frames) {
  * path; it is removed before returning. The call takes as long as the music
  * does — there is no way to ask a module to render faster.
  */
+
+/**
+ * How far the capture sits from the score's grid, in seconds.
+ *
+ * `latencyMs` covers the wire: "the note was sent" to "the module answered".
+ * It does not cover the recorder opening its stream slightly later, or a
+ * driver reporting a shorter input latency than the hardware really has. What
+ * is left is a constant few tens of milliseconds, and at 120 BPM a sixteenth
+ * note is 125 ms, so 25 ms is a fifth of one — audible as a part that drags.
+ *
+ * Measuring it needs no extra signal. The part says when notes start; the
+ * capture says when sound starts; cross-correlating the two envelopes over a
+ * bounded window gives the shift. Returns null when the envelopes do not
+ * agree well enough to trust the number.
+ */
+function envelopeOf(channels, frames, hop) {
+  const buckets = Math.floor(frames / hop)
+  const out = new Float32Array(buckets)
+  for (let b = 0; b < buckets; b++) {
+    let sum = 0
+    for (let i = b * hop, end = (b + 1) * hop; i < end; i++) {
+      let mono = 0
+      for (const channel of channels) mono += channel[i]
+      mono /= channels.length
+      sum += mono * mono
+    }
+    out[b] = Math.sqrt(sum / hop)
+  }
+  return out
+}
+
+function theoryEnvelope(track, buckets, sampleRate, hop) {
+  const out = new Float32Array(buckets)
+  const decay = Math.max(1, Math.round((0.12 * sampleRate) / hop))
+  for (const note of track.notes) {
+    const start = Math.round((note.start * sampleRate) / hop)
+    const weight = Math.min(1, Math.max(0.15, note.velocity / 100))
+    for (let k = 0; k < decay; k++) {
+      const index = start + k
+      if (index >= 0 && index < buckets) out[index] += weight * (1 - k / decay)
+    }
+  }
+  return out
+}
+
+function centred(arr) {
+  let mean = 0
+  for (const value of arr) mean += value
+  mean /= arr.length || 1
+  const out = new Float32Array(arr.length)
+  let energy = 0
+  for (let i = 0; i < arr.length; i++) {
+    out[i] = arr[i] - mean
+    energy += out[i] * out[i]
+  }
+  const norm = Math.sqrt(energy) || 1
+  for (let i = 0; i < out.length; i++) out[i] /= norm
+  return out
+}
+
+export function measureCaptureLag(channels, track, sampleRate, { maxMs = 250 } = {}) {
+  const hop = Math.max(1, Math.round(sampleRate * 0.005))
+  const frames = channels[0]?.length ?? 0
+  const buckets = Math.floor(frames / hop)
+  if (buckets < 40 || track.notes.length === 0) return null
+  const captured = centred(envelopeOf(channels, frames, hop))
+  const theory = centred(theoryEnvelope(track, buckets, sampleRate, hop))
+  const limit = Math.max(1, Math.round(((maxMs / 1000) * sampleRate) / hop))
+  let best = null
+  for (let lag = -limit; lag <= limit; lag++) {
+    let sum = 0
+    for (let i = 0; i < buckets; i++) {
+      const j = i + lag
+      if (j < 0 || j >= buckets) continue
+      sum += theory[i] * captured[j]
+    }
+    if (best === null || sum > best.sum) best = { sum, lag }
+  }
+  // Below this the envelopes share no shape worth calling an offset; leaving
+  // the take alone is safer than moving it on a guess.
+  if (best === null || best.sum < 0.12) return null
+  return (best.lag * hop) / sampleRate
+}
+
+/** Move every channel by `lagSec`; a positive lag means the take arrived late. */
+export function shiftChannels(channels, lagSec, sampleRate) {
+  const shift = Math.round(lagSec * sampleRate)
+  if (shift === 0) return
+  for (const channel of channels) {
+    if (shift > 0) {
+      for (let i = 0; i + shift < channel.length; i++) channel[i] = channel[i + shift]
+      for (let i = Math.max(0, channel.length - shift); i < channel.length; i++) channel[i] = 0
+    } else {
+      const back = -shift
+      for (let i = channel.length - 1; i >= back; i--) channel[i] = channel[i - back]
+      for (let i = 0; i < back; i++) channel[i] = 0
+    }
+  }
+}
+
+/**
+ * Seconds into the capture where the module first answers, or null.
+ *
+ * A part is recorded with one short note 0.4 s before the music starts. That
+ * note is the only sound in the lead-in, so the first sample above the floor
+ * is the module answering, and how far in it sits is the wire delay plus the
+ * recorder's own start — the two numbers a person cannot measure by hand.
+ */
+export function firstPeakOffset(channels, sampleRate, { searchSec = 1, floorDb = -50 } = {}) {
+  const limit = Math.min(channels[0]?.length ?? 0, Math.round(searchSec * sampleRate))
+  let peak = 0
+  for (const channel of channels) {
+    for (let i = 0; i < limit; i++) peak = Math.max(peak, Math.abs(channel[i]))
+  }
+  if (peak === 0) return null
+  const floor = peak * Math.pow(10, floorDb / 20)
+  for (let i = 0; i < limit; i++) {
+    for (const channel of channels) {
+      if (Math.abs(channel[i]) > floor) return i / sampleRate
+    }
+  }
+  return null
+}
+
+/** The lead-in that carries the measuring note; it is cut away afterwards. */
+const HW_LEAD_IN_SEC = 0.4
+const HW_CALIBRATION_KEY = 84
 export async function renderHwStem(track, { sampleRate = 48000, durationSec, out, timeoutMs, keepCapture = false, fromPath = null } = {}) {
   if (!out && !fromPath) throw new Error(`renderHwStem needs an output path for "${track.name}"`)
   const port = track.hw?.port
@@ -108,6 +235,15 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
   if (notes.length === 0) {
     return { channels: emptyPair(frames), frames, peakDb: null, rmsDb: null, port, warnings: ['the part has no notes'] }
   }
+  // The measuring note rides 0.4 s ahead of the music. It never reaches the
+  // deliverable: the lead-in is cut away once the capture says where it landed,
+  // and what is left is the module sitting exactly on the score's grid.
+  const calibrate = track.hw.align !== false
+  const leadIn = calibrate ? HW_LEAD_IN_SEC : 0
+  const captureFrames = frames + Math.round(leadIn * sampleRate)
+  const captureNotes = calibrate
+    ? [[0, 0.03, HW_CALIBRATION_KEY, 110], ...notes.map(([start, duration, midi, velocity]) => [start + leadIn, duration, midi, velocity])]
+    : notes
   const device = captureDeviceFor(track)
   // An index may arrive as "29". The worker treats a real number as an index and
   // anything else as a name, so a numeric string would match no input at all.
@@ -123,13 +259,21 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
   // one that comes back empty.
   if (fromPath) {
     const reused = parseWav(await readFile(fromPath))
-    const channels = fitChannels(reused.channels, frames)
+    const raw = fitChannels(reused.channels, captureFrames)
+    const peakAt = calibrate ? firstPeakOffset(raw, sampleRate) : null
+    const drop = peakAt !== null ? peakAt + leadIn : (latencyMs / 1000) + leadIn
+    const alignMs = Math.round(drop * 1000)
+    shiftChannels(raw, drop, sampleRate)
+    if (calibrate && peakAt === null) {
+      warnings.push(`the measuring note did not come back, so the take was trimmed by the latency setting (${Math.round(latencyMs)} ms) instead`)
+    }
+    const channels = fitChannels(raw, frames)
     const mixGain = Number.isFinite(track.mixGain) ? track.mixGain : 1
     if (mixGain !== 1) {
       for (const channel of channels) for (let i = 0; i < channel.length; i++) channel[i] *= mixGain
     }
-    if (reused.frames !== frames) {
-      warnings.push(`the capture was ${reused.frames} frames instead of ${frames}; padded or trimmed to fit`)
+    if (reused.frames !== captureFrames) {
+      warnings.push(`the capture was ${reused.frames} frames instead of ${captureFrames}; padded or trimmed to fit`)
     }
     return {
       channels,
@@ -139,6 +283,7 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       port,
       device,
       latencyMs,
+      alignMs,
       warnings,
     }
   }
@@ -159,22 +304,24 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       + 'so put the real number in hw.voices to have it checked',
     )
   }
-  if (!(latencyMs > 0)) {
+  if (!calibrate && !(latencyMs > 0)) {
     warnings.push(
-      'no latency was given for this part, so the audio may start a few tens of milliseconds late. '
-      + 'Run anyaudio_midiout action "calibrate" once for this rig and put the measured number in latencyMs.',
+      'alignment is off for this part and no latency was given, so the audio may start a few tens of milliseconds late. '
+      + 'Either drop hw.align or run anyaudio_midiout action "calibrate" and put the measured number in latencyMs.',
     )
   }
   try {
     const reply = await playMidi({
       port,
-      notes,
+      notes: captureNotes,
       channel: track.hw.channel,
       program: track.hw.program,
       controls: controlsForHw(track),
-      durationSec: frames / sampleRate,
-      capture: { device: deviceArg, channels: 2, sampleRate, durationSec: frames / sampleRate, trimLatencyMs: latencyMs, out },
-      timeoutMs: timeoutMs ?? Math.round((frames / sampleRate) * 1000) + 60000,
+      durationSec: captureFrames / sampleRate,
+      // The cut is made here, from where the measuring note actually landed,
+      // so the worker is asked to leave the capture alone.
+      capture: { device: deviceArg, channels: 2, sampleRate, durationSec: captureFrames / sampleRate, trimLatencyMs: 0, out },
+      timeoutMs: timeoutMs ?? Math.round((captureFrames / sampleRate) * 1000) + 60000,
     })
     const capture = reply.capture ?? {}
     if (capture.silent) {
@@ -185,13 +332,21 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       )
     }
     const parsed = parseWav(await readFile(out))
-    const channels = fitChannels(parsed.channels, frames)
+    const raw = fitChannels(parsed.channels, captureFrames)
+    const peakAt = calibrate ? firstPeakOffset(raw, sampleRate) : null
+    const drop = peakAt !== null ? peakAt + leadIn : (latencyMs / 1000) + leadIn
+    const alignMs = Math.round(drop * 1000)
+    shiftChannels(raw, drop, sampleRate)
+    if (calibrate && peakAt === null) {
+      warnings.push(`the measuring note did not come back, so the take was trimmed by the latency setting (${Math.round(latencyMs)} ms) instead`)
+    }
+    const channels = fitChannels(raw, frames)
     const mixGain = Number.isFinite(track.mixGain) ? track.mixGain : 1
     if (mixGain !== 1) {
       for (const channel of channels) for (let i = 0; i < channel.length; i++) channel[i] *= mixGain
     }
-    if (parsed.frames !== frames) {
-      warnings.push(`the capture was ${parsed.frames} frames instead of ${frames}; padded or trimmed to fit`)
+    if (parsed.frames !== captureFrames) {
+      warnings.push(`the capture was ${parsed.frames} frames instead of ${captureFrames}; padded or trimmed to fit`)
     }
     return {
       channels,
@@ -201,6 +356,7 @@ export async function renderHwStem(track, { sampleRate = 48000, durationSec, out
       port: reply.port ?? port,
       device: capture.device ?? device,
       latencyMs,
+      alignMs,
       warnings,
     }
   } finally {

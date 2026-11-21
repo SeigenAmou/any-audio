@@ -8,7 +8,8 @@ import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
 import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
 import { drumKeys, planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
-import { peakPolyphony } from '../src/audio/hw-track.js'
+import { nearestDrumKey, remapDrumTrack } from '../src/audio/drum-map.js'
+import { firstPeakOffset, peakPolyphony, shiftChannels } from '../src/audio/hw-track.js'
 import { listManuals, manualSlug, readManual, removeManual, saveManual } from '../src/audio/manuals.js'
 import { peInfo, scanVstLibrary, vst2Kind } from '../src/audio/vst-host.js'
 import { encodeFxp } from '../src/audio/vst-preset.js'
@@ -1946,6 +1947,53 @@ await test('humanize is a repeatable shuffle, not a different take every run', a
     expression: [{ type: 'velocity_line', start: 0, end: 1, from: 20, to: 100 }],
   }, {})
   assert(empty.warnings.some((line) => /found no note/.test(line)), 'a gesture over no notes is reported, not silently dropped')
+})
+
+await test('the measuring note tells the recorder how late it started', async () => {
+  const rate = 48000
+  const frames = rate
+  const channels = [new Float32Array(frames), new Float32Array(frames)]
+  const at = Math.round(0.42 * rate)
+  channels[0][at] = 0.9
+  channels[1][at] = 0.9
+  const offset = firstPeakOffset(channels, rate, { searchSec: 1, floorDb: -50 })
+  assert(Math.abs(offset - 0.42) < 0.001, `first sound at ${offset.toFixed(3)}s, expected 0.42s`)
+
+  const silent = [new Float32Array(frames)]
+  assert(firstPeakOffset(silent, rate) === null, 'silence has no first sound to report')
+
+  const moved = [Float32Array.from({ length: 8 }, (_, i) => i + 1)]
+  shiftChannels(moved, 3 / rate, rate)
+  assert(moved[0][0] === 4, `a late take moves one way: ${moved[0][0]}`)
+  shiftChannels(moved, -2 / rate, rate)
+  assert(moved[0][0] === 0 && moved[0][1] === 0 && moved[0][2] === 4, 'and the other way')
+})
+
+await test('a drum kit answers the nearest key it actually has', async () => {
+  const available = new Set([36, 38, 42])
+  const match = nearestDrumKey(48, available)
+  assert(match && available.has(match.key), 'the answer is a key the kit has')
+  assert(match.key === 38 || match.key === 42 || match.key === 36, `got ${match.key}`)
+  assert(nearestDrumKey(38, available) === null, 'a key the kit already has needs no move')
+
+  const track = {
+    name: 'kit',
+    channel: 9,
+    notes: [
+      { start: 0, duration: 0.2, midi: 48, velocity: 100 },
+      { start: 0.5, duration: 0.2, midi: 38, velocity: 100 },
+    ],
+    events: [
+      { t: 0, type: 'on', note: 48, velocity: 100, channel: 9 },
+      { t: 0.2, type: 'off', note: 48, channel: 9 },
+      { t: 0.5, type: 'on', note: 38, velocity: 100, channel: 9 },
+      { t: 0.7, type: 'off', note: 38, channel: 9 },
+    ],
+  }
+  const moves = remapDrumTrack(track, new Set([36, 38, 42]))
+  assert(moves.length === 1, `expected one move, got ${moves.length}`)
+  assert(track.notes[0].midi !== 48, 'the note was moved to a key the kit has')
+  assert(track.events.some((event) => event.type === 'on' && event.note === track.notes[0].midi), 'the events moved with the notes')
 })
 
 if (!hadAnyAudioDir) {

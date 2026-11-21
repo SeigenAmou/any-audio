@@ -12,6 +12,7 @@ import { basename, extname } from 'node:path'
 import { defaultFontPath, findRecommended, findRecommendedByFile, listFonts, resolveFont } from './fonts.js'
 import { categoryOfProgram, fontScore, rankFonts } from './scoring.js'
 import { loadSoundBank } from './synth.js'
+import { remapDrumTrack } from './drum-map.js'
 
 export function melodicPresets(bank) {
   return (bank.presets ?? []).filter((preset) => preset.isGMGSDrum !== true && (preset.bankMSB ?? 0) !== 120)
@@ -261,10 +262,17 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
       if (keys.size > 0) {
         const wanted = [...new Set(track.notes.map((note) => note.midi))].sort((a, b) => a - b)
         const missing = wanted.filter((key) => !keys.has(key))
-        if (missing.length === wanted.length) {
-          warnings.push(`track "${track.name}" will be silent: "${defaultEntry.name}" answers only ${keys.size} drum key(s) (${[...keys].sort((a, b) => a - b).join(', ')}) and none of this track's keys (${wanted.join(', ')}) is among them`)
-        } else if (missing.length > 0) {
-          warnings.push(`track "${track.name}": "${defaultEntry.name}" has no drum sample for key(s) ${missing.join(', ')} — those notes will be silent. It answers ${keys.size} key(s)`)
+        if (missing.length > 0) {
+          // A kit only answers the keys its samples were mapped to. Moving the
+          // part onto the nearest key it does answer keeps the groove instead of
+          // deleting it, and the warning names every move so nothing is silent.
+          const moves = remapDrumTrack(track, keys)
+          if (moves.length > 0) {
+            const list = moves.map((move) => `${move.from}→${move.to} (${move.fromName}→${move.toName})`).join(', ')
+            warnings.push(`track "${track.name}": "${defaultEntry.name}" answers ${keys.size} drum key(s); moved ${list} so the part still sounds — check those hits by ear`)
+          } else {
+            warnings.push(`track "${track.name}": "${defaultEntry.name}" has no drum sample for key(s) ${missing.join(', ')} — those notes will be silent. It answers ${keys.size} key(s)`)
+          }
         }
       }
       continue
