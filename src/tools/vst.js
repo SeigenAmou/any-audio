@@ -186,9 +186,19 @@ export const vstToolDefinition = finalizeTool({
         ].join('\n')
       }
       if (value.action === 'status') {
-        return value.available
-          ? `VST bridge ready: python ${value.python}, pedalboard ${value.pedalboard}`
-          : `VST bridge not ready: ${value.error ?? 'unknown'} (run pip install pedalboard for ${value.python})`
+        if (!value.available) {
+          return `VST bridge not ready: ${value.error ?? 'unknown'} (run pip install pedalboard for ${value.python})`
+        }
+        const vst2 = value.vst2
+        const vst2Line = !vst2
+          ? 'VST2 bridge: not checked'
+          : vst2.available
+            ? `VST2 bridge ready: dawdreamer ${vst2.dawdreamer ?? 'present'}`
+            : `VST2 bridge not ready: ${vst2.error ?? 'unknown'} (run pip install dawdreamer for ${vst2.python ?? value.python})`
+        return [
+          `VST3 bridge ready: python ${value.python}, pedalboard ${value.pedalboard}`,
+          vst2Line,
+        ].join('\n')
       }
       if (value.action === 'preset') {
         if (value.presetAction === 'save') {
