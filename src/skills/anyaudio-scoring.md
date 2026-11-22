@@ -275,7 +275,9 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 **先看手册里的表，再决定怎么写 bank**：乐器分类几乎都写在手册的 bank 表里——Orchestral 是 MSB 0 / LSB 0–6（0 弦乐组、1 独奏弦乐、2 铜管组、3 独奏铜管、4 木管、5 键盘打击乐、6 节奏组），Super Quartet 是 MSB 0–3（钢琴/吉他/贝斯/鼓）。所以读手册时要主动搜 `PC` `MSB` `LSB` `Bank` `CC#` `Controller` `Note#` 这些字眼，把「哪个 bank/program 是哪个音色」抄进说明书；不抄，写声部时就只能瞎猜。
 
-**桥接到底转发哪一字节，要自己试**：经 jBridge 的 Super Quartet 只认 **CC32（LSB）**——LSB 0/1/2/3 分别是 Piano/Guitar/Bass/Drums（实测 rms 0.004471 / 0.002598 / 0.001577 / 0.000896），而 CC0（MSB）改成 1/2/3 时 rms 恒定 0.021036，说明被桥接吞了；同一台机器上经 jBridge 的 Orchestral 则 **CC0 与 CC32 都通**（MSB 0 / LSB 0–6 分七类，LSB 6 是节奏组：高频占比 0.99、频谱平坦度 0.32）。所以「桥接插件收不到 CC」不是通则，每个插件都要自己试一次——试法是同一通道弹同一个音、只改一个字节，比较 rms 与频谱；数字完全一样就是没通。谱面上两个字节都能写：`bank` 是 MSB、`bankLsb` 是 LSB。
+**两个 bank 字节各管一件事**：数码钢琴/合成器常用的写法是 `MSB = 库`（0 出厂、1 用户）、`LSB = 模块或类别`，两个都发完之后再来一条 `program` 才算选定。Super Quartet 就是这样：`MSB 0 / LSB 0–3` 是出厂钢琴/吉他/贝斯/鼓，`MSB 1 / LSB 0–3` 是用户库的同一批模块（只改 LSB 才换模块，手册里 `MSB 2`、`MSB 3` 根本没有定义）。Orchestral 则是 `MSB 0 / LSB 0–6` 分七类（0 弦乐组、1 独奏弦乐、2 铜管组、3 独奏铜管、4 木管、5 键盘打击乐、6 节奏组）。
+
+**桥接转发哪一字节要自己试**：本机 jBridge 版的 Super Quartet 只认 LSB（CC32），MSB 改成 1/2/3 时 rms 恒定——那其实是「MSB 是库、用户库为空」的正常表现，不是被吞。Orchestral 两个字节都通。判断办法：同一通道弹同一个音、只改一个字节，比较 rms 与频谱；完全一样就是这一个字节没起作用。手册还提醒 Emagic Logic 系列宿主可能收不到 CC32，那种宿主要把控制映射切成 “Logic” 模式才能用 MSB 选全部 bank。谱面上 `bank` 是 MSB、`bankLsb` 是 LSB。
 
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 
