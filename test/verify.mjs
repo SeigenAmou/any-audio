@@ -1592,15 +1592,18 @@ await test('a score can hand one part to a plugin without stealing a SoundFont c
   const multi = compileScore({
     tracks: [
       { name: 'piano', vst: { plugin: 'C:/sq.dll', channel: 0, bank: 0 }, instrument: 0, notes: [[0, 1, 60, 90]] },
-      { name: 'bass', vst: { plugin: 'C:/sq.dll', channel: 2, bank: 2 }, instrument: 33, notes: [[0, 1, 36, 90]] },
+      { name: 'bass', vst: { plugin: 'C:/sq.dll', channel: 2, bank: 0, bankLsb: 2 }, instrument: 33, notes: [[0, 1, 36, 90]] },
     ],
   })
   const bass = multi.tracks.find((track) => track.name === 'bass')
   assert(bass.channel === 2 && bass.vst.channel === 2, 'a plugin part keeps the channel it asked for')
-  assert(bass.vst.bank === 2, 'the bank survives normalization')
+  assert(bass.vst.bank === 0 && bass.vst.bankLsb === 2, 'both bank bytes survive normalization')
   const bankEvent = bass.events.find((event) => event.type === 'bank')
+  const bankLsbEvent = bass.events.find((event) => event.type === 'banklsb')
   const programEvent = bass.events.find((event) => event.type === 'program')
-  assert(bankEvent && bankEvent.bank === 2 && bankEvent.channel === 2, 'the bank goes out as a bank event on that channel')
+  assert(bankEvent && bankEvent.bank === 0 && bankEvent.channel === 2, 'the bank MSB goes out as a bank event on that channel')
+  assert(bankLsbEvent && bankLsbEvent.bank === 2 && bankLsbEvent.channel === 2,
+    'the bank LSB goes out as its own event — the EDIROL modules put the family there')
   assert(programEvent && programEvent.program === 33 && programEvent.channel === 2, 'the program goes out on the same channel')
   assert(bankEvent.t === 0 && programEvent.t === 0, 'bank and program sit at the start')
   const cc0 = bass.events.filter((event) => event.type === 'cc' && event.controller === 0)

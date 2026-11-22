@@ -35,7 +35,7 @@ const META = 0xff
  * other way around.
  */
 const NOTE_ORDER = { off: 3, on: 4 }
-const CONTROL_ORDER = { bank: 0, program: 1, cc: 2, pitch: 2 }
+const CONTROL_ORDER = { bank: 0, banklsb: 0, program: 1, cc: 2, pitch: 2 }
 
 /** Clamp a value into the 7-bit range every MIDI data byte must live in. */
 function data(value) {
@@ -82,6 +82,8 @@ function eventBytes(event) {
   switch (event.type) {
     case 'bank':
       return [CC | event.channel, 0, data(event.bank)]
+    case 'banklsb':
+      return [CC | event.channel, 32, data(event.bank)]
     case 'program':
       return [PROGRAM | event.channel, data(event.program)]
     case 'cc':

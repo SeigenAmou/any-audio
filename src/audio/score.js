@@ -61,7 +61,7 @@ const AUTOMATION = {
 
 const DEFAULT_VELOCITY = 88
 const BLOCK = 128
-const EVENT_PRIORITY = { bank: 0, program: 1, cc: 2, pitch: 2, off: 3, on: 4 }
+const EVENT_PRIORITY = { bank: 0, banklsb: 0, program: 1, cc: 2, pitch: 2, off: 3, on: 4 }
 
 export class ScoreError extends Error {
   constructor(issues) {
@@ -195,11 +195,16 @@ function normalizeVst(spec, trackName) {
   // a wrong channel should sound wrong in an obvious way, not kill the render.
   const channel = Number.isInteger(raw.channel) ? Math.max(0, Math.min(15, raw.channel)) : undefined
   const bank = Number.isInteger(raw.bank) ? Math.max(0, Math.min(127, raw.bank)) : undefined
+  // The bank select is two bytes: CC0 picks the bank (MSB) and CC32 its page
+  // (LSB). Multi-timbral modules often put the instrument family in the LSB --
+  // the EDIROL modules do -- so a part that wants the brass bank sends 0/2.
+  const bankLsb = Number.isInteger(raw.bankLsb) ? Math.max(0, Math.min(127, raw.bankLsb)) : undefined
   return {
     plugin, params,
     ...(controls ? { controls } : {}),
     ...(channel !== undefined ? { channel } : {}),
     ...(bank !== undefined ? { bank } : {}),
+    ...(bankLsb !== undefined ? { bankLsb } : {}),
   }
 }
 
@@ -466,6 +471,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       // plugin — that is how a multi-timbral instrument picks one of its
       // modules (Super Quartet: CC0 0/1/2/3 selects piano/guitar/bass/drums).
       if (Number.isInteger(vst.bank)) events.push({ t: 0, type: 'bank', channel, bank: vst.bank })
+      if (Number.isInteger(vst.bankLsb)) events.push({ t: 0, type: 'banklsb', channel, bank: vst.bankLsb })
       events.push({ t: 0, type: 'program', channel, program })
     }
     if (!external) {

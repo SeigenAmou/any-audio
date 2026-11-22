@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { FONT_EXTENSIONS, RECOMMENDED_FONTS, findRecommendedByFile, fontSearchDirs, installFont, listFonts, resolveFont } from '../audio/fonts.js'
 import { loadCatalog } from '../audio/banks.js'
-import { addPending, extractManualText, listManuals, listPending, manualsDir, pendingFor, readManual, removeManual, removePending, saveManual } from '../audio/manuals.js'
+import { addPending, extractManualText, fitManualText, listManuals, listPending, MANUAL_EXTRACT_CHARS, manualsDir, pendingFor, readManual, removeManual, removePending, saveManual } from '../audio/manuals.js'
 import { DRUM_MAP, INSTRUMENTS } from '../audio/score.js'
 import { CATEGORY_LABELS, scoreTable } from '../audio/scoring.js'
 import { listSourceKinds } from '../audio/sources.js'
@@ -10,29 +10,6 @@ import { loadSoundBank, listPresets } from '../audio/synth.js'
 import { readConfig, updateConfig } from '../config.js'
 import { finalizeTool, formatBytes, relativeToWorkspace, textRenderer, workspaceRootOf } from './shared.js'
 
-/**
- * How much of an imported manual to keep. The manual file itself is capped at
- * 256 KB, and CJK costs three bytes a character, so a full dump of a 300-page
- * PDF would be rejected. 70k characters keeps roughly 200 KB of Japanese and a
- * comfortable English manual, and the extractor says when it truncated.
- */
-const MANUAL_EXTRACT_CHARS = 200000
-
-/** A note sheet is capped at 256 KB. A manual that reads past that is not cut
- *  at an arbitrary character: the limit is applied on a paragraph boundary and
- *  the card says what did not fit, so the reader knows the rest is in the
- *  source file rather than believing the manual ends there. */
-function fitManualText(text) {
-  const limit = 250000
-  const bytes = Buffer.byteLength(text, 'utf8')
-  if (bytes <= limit) return text
-  let cut = Math.floor(text.length * 0.6)
-  while (cut > 1000 && Buffer.byteLength(text.slice(0, cut), 'utf8') > limit) cut = Math.floor(cut * 0.9)
-  const boundary = text.lastIndexOf('\n\n', cut)
-  if (boundary > cut * 0.5) cut = boundary
-  const head = text.slice(0, cut).trimEnd()
-  return head + `\n\n[stored: ${bytes} bytes were read; the first ${Buffer.byteLength(head, 'utf8')} bytes are below and the rest is still in the source file — re-read that section there if you need it]`
-}
 
 function groupInstruments() {
   const families = {

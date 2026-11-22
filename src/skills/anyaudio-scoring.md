@@ -271,7 +271,11 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 **两条通道的区别要说清，别混用**：VST2 声部送进去的是 MIDI 文件，所以谱面的 `automation`（CC 事件）真的会到达插件——插件若开了 MIDI Learn / 固定 CC 映射（例如 SRX 的 CC7 音量、CC91 混响发送），可以用 `{"track":"keys","controller":7,"points":[[0,127],[4,40]]}` 这样推它。VST3 声部走 pedalboard，插件只收到音频缓冲、收不到 MIDI，所以对 VST3 来说参数只有两条路：`params`（参数名，`action:"info"` 里能查到）和预设文件。
 
-**一个插件里的多个模块（多音色插件）**：GM/多音色音源（Super Quartet、Hyper Canvas、XV-5080 这类）一个实例里放多个模块，每个模块吃一条 MIDI 通道——谱面里给 `"vst"` 写 `"channel"` 就是指定它走哪条通道，同一个插件路径的多条轨道可以各走各的通道。`bank` 与 `program` 会在曲首以 CC0/PC 发给插件，但**经 jBridge 加载的 Super Quartet 实测收不到 CC0**（bank select 被桥接吞掉），`program`、CC7、CC10、CC91 都正常；所以跨模块挑音色不要指望 `bank`，先在插件界面里把这个模块调好、另存 `.fxp`，再用 `"vst":{"preset":"…"}` 加载，通道号仍写在 `channel` 上。
+**一个插件里的多个模块（多音色插件）**：GM/多音色音源（Super Quartet、Hyper Canvas、Orchestral、XV-5080 这类）一个实例里放多个模块，每个模块吃一条 MIDI 通道、并靠 bank 选类别——谱面里给 `"vst"` 写 `"channel"` 指定通道，`"bank"`（CC0，MSB）与 `"bankLsb"`（CC32，LSB）在曲首发给插件，之后才发 `program`。同一个插件路径的多条轨道可以各走各的通道。
+
+**先看手册里的表，再决定怎么写 bank**：乐器分类几乎都写在手册的 bank 表里——Orchestral 是 MSB 0 / LSB 0–6（0 弦乐组、1 独奏弦乐、2 铜管组、3 独奏铜管、4 木管、5 键盘打击乐、6 节奏组），Super Quartet 是 MSB 0–3（钢琴/吉他/贝斯/鼓）。所以读手册时要主动搜 `PC` `MSB` `LSB` `Bank` `CC#` `Controller` `Note#` 这些字眼，把「哪个 bank/program 是哪个音色」抄进说明书；不抄，写声部时就只能瞎猜。
+
+**桥接会吞控制器的先说清楚**：实测经 jBridge 的 Super Quartet 收不到 CC0（发了也不换类别，只能靠 `.fxp` 预设）；同一台机器上经 jBridge 的 Orchestral **CC0/CC32 都通**，LSB 0–6 逐个换类别、LSB 6 就是节奏组（高频占比 0.99、频谱平坦度 0.32，一听就是鼓）。所以「桥接插件收不到 CC」不是通则，每个插件都要自己试一次——试法是同一通道弹同一个音、只改 bank，比较 rms 与频谱；没有差异就是没通。
 
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 
@@ -308,6 +312,7 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 - **登记过的外部音源可以直接写名字**：在 设置 → AnyAudio → 音源 → 外部音源 里登记过「名字 + MIDI 端口 + 音频输入」之后，`"hw": "SD-20"` 就等于同时写了 `port`、`captureDevice`、`latencyMs`、`voices`。轨上再写的字段会覆盖登记值（比如只改 `channel`）。名字没登记就照旧当端口名用，不会报错。
 - **VST 插件也有说明书**：说明书不限于硬件音源，插件同样可以挂一篇——名字用插件显示名（如 `JUNO-106`）或文件名。设置页「插件与音源」选中一个插件就能写、也能从厂商 PDF 或网页文件夹导入；Agent 用 `anyaudio_sources {action:"manual", name:"JUNO-106"}` 读。合成器的音色号、必须打开的开关、哪些参数不响应 CC，都写在这里，别在写声部时凭插件名猜。
 - **写声部前先看说明书**：`anyaudio_sources {action:"manuals"}` 列出已经写好的说明，`{action:"manual", name:"SD-20"}` 读某一篇。说明书记的是这台模块的真实用法（哪个音色号是什么、哪些控制器不起作用、有什么坑），比从型号或说明书 PDF 推更准。**没有说明书时不要凭型号猜音色号**——问用户，然后把答案用 `{action:"manual_set", name:"SD-20", text:"…"}` 存下来，别的会话下次也能直接用。设置页 音源 → 外部音源 每条右侧也有「说明书」按钮，用户自己也能写。
+- **用户在对话里说的插件/设备知识，当场记下来**：他告诉你「这台模块的鼓在通道 10」「PC 4 才是贝斯」「要先关掉某个开关」，这不是闲聊，是下次还要用的知识。立刻 `anyaudio_sources {action:"manual_set", name:"<插件或设备>", text:"…"}` 写进说明书（已有就补一段），并在回复里说一句「已记进说明书」。不要等用户重复第二遍，也不要只在心里记着——会话结束就没了。
 - **厂商手册是登记制，不是一进来就读**：`{action:"manual_import", name:"…", path:"…"}` 默认只把文件/文件夹的路径记进待读清单（几百页 PDF 立刻解析既慢又会截断）。所以动手替某个音源写声部之前，先 `{action:"manuals_pending"}` 看这个音源有没有待读的手册；有就 `{action:"manual_parse", name:"…"}` 现场解析并归档，再 `{action:"manual"}` 读它，把音色号、CC 支持、限制提炼成一篇同名说明。也可以在导入时直接加 `"parse": true` 立即解析。
 - 短形式 `hw` 只写端口名；长形式还可给 `channel`（0–15，这个端口自己的通道号）、`program`（音色号）、`captureDevice`、`latencyMs`、`voices`（模块的复音数）。
 - `captureDevice` 不写就找环境变量 `ANYAUDIO_CAPTURE_DEVICE`；两者都没有会直接报错——因为「弹了但没录」会得到一条静音，比报错更难查。

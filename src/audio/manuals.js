@@ -33,6 +33,28 @@ export function manualPython() {
 /** A manual is prose, not a sample library; anything past this is a mistake. */
 export const MAX_MANUAL_BYTES = 256 * 1024
 
+/** How much text the extractor may hand back for one source. A manual is kept
+ *  in a note sheet of at most 256 KB and CJK costs three bytes a character, so
+ *  a very large vendor folder is read up to this many characters and the
+ *  extractor reports what it had to leave for later. */
+export const MANUAL_EXTRACT_CHARS = 200000
+
+/** A note sheet is capped at 256 KB. A manual that reads past that is not cut
+ *  at an arbitrary character: the limit is applied on a paragraph boundary and
+ *  the card says what did not fit, so the reader knows the rest is in the
+ *  source file rather than believing the manual ends there. */
+export function fitManualText(text) {
+  const limit = 250000
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes <= limit) return text
+  let cut = Math.floor(text.length * 0.6)
+  while (cut > 1000 && Buffer.byteLength(text.slice(0, cut), 'utf8') > limit) cut = Math.floor(cut * 0.9)
+  const head = text.slice(0, cut)
+  const at = head.lastIndexOf('\n\n')
+  const body = at > 0 ? head.slice(0, at) : head
+  return `${body}\n\n[cut here: this note is longer than a note sheet can hold. The full text is still in the source file the manual was imported from.]\n`
+}
+
 export function manualsDir() {
   return process.env.ANYAUDIO_MANUALS || join(homedir(), '.dsh', 'anyaudio', 'manuals')
 }
