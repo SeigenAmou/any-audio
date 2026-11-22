@@ -977,7 +977,7 @@ function OrchestrationCard({ notify }) {
     h('div', { style: S.row }, [
       h(TextInput, {
         value: name,
-        placeholder: t('表名，例如 Touhou Sound Sources'),
+        placeholder: t('表名，例如 Studio Orchestra'),
         onChange: value => setName(value),
         style: { flex: 1 },
       }),
