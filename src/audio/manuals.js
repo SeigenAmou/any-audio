@@ -76,6 +76,64 @@ export function listManuals() {
   return rows.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/**
+ * Manuals that were pointed at but not read yet.
+ *
+ * A vendor PDF is often hundreds of pages; extracting it the moment it is named
+ * spends minutes on text nobody asked for, and truncation throws away the part
+ * that mattered. So a source is registered by path first (this list), and the
+ * text is extracted only when an agent is about to use that source. The skill
+ * tells the agent to check this list before composing.
+ */
+export function pendingPath() {
+  return join(manualsDir(), 'pending.json')
+}
+
+export function listPending() {
+  const path = pendingPath()
+  if (!existsSync(path)) return []
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter(row => row && typeof row.name === 'string' && typeof row.path === 'string')
+      .map(row => ({ name: row.name, path: row.path, addedAt: row.addedAt || '', note: row.note || '' }))
+  } catch {
+    return []
+  }
+}
+
+function writePending(rows) {
+  const dir = manualsDir()
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(pendingPath(), JSON.stringify(rows, null, 2), 'utf8')
+}
+
+export function addPending({ name, path, note = '' }) {
+  const slug = manualSlug(name)
+  const target = String(path ?? '').trim()
+  if (!target) throw new Error('a pending manual needs a file or folder path')
+  if (!existsSync(target)) throw new Error(`nothing at ${target}`)
+  const rows = listPending().filter(row => row.name !== slug)
+  rows.push({ name: slug, path: target, addedAt: new Date().toISOString(), note: String(note ?? '') })
+  writePending(rows)
+  return { name: slug, path: target, pending: true }
+}
+
+export function removePending(name) {
+  const slug = manualSlug(name)
+  const rows = listPending()
+  const next = rows.filter(row => row.name !== slug)
+  if (next.length !== rows.length) writePending(next)
+  return { name: slug, removed: next.length !== rows.length }
+}
+
+/** The path registered for a source, or null. */
+export function pendingFor(name) {
+  const slug = manualSlug(name)
+  return listPending().find(row => row.name === slug) || null
+}
+
 /** Returns null when nothing was written for that source. */
 export function readManual(name) {
   const path = entryPath(name)

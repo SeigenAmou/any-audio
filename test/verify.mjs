@@ -10,7 +10,7 @@ import { muxVideo } from '../src/audio/mux.js'
 import { drumKeys, planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
 import { nearestDrumKey, remapDrumTrack } from '../src/audio/drum-map.js'
 import { firstPeakOffset, peakPolyphony, shiftChannels } from '../src/audio/hw-track.js'
-import { listManuals, manualSlug, readManual, removeManual, saveManual } from '../src/audio/manuals.js'
+import { addPending, listManuals, listPending, manualSlug, pendingFor, readManual, removeManual, removePending, saveManual } from '../src/audio/manuals.js'
 import { peInfo, scanVstLibrary, vst2Kind } from '../src/audio/vst-host.js'
 import { encodeFxp } from '../src/audio/vst-preset.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
@@ -1802,6 +1802,38 @@ await test('a manual about a source lives under one slug no matter how it is spe
     if (previous === undefined) delete process.env.ANYAUDIO_MANUALS
     else process.env.ANYAUDIO_MANUALS = previous
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+await test('a manual can be registered now and read only when it is needed', async () => {
+  // A vendor PDF is often hundreds of pages. Naming it must not cost a parse;
+  // the path waits in a list until an agent is about to compose for that source.
+  const dir = await mkdtemp(join(tmpdir(), 'anyaudio-pending-'))
+  const previous = process.env.ANYAUDIO_MANUALS
+  process.env.ANYAUDIO_MANUALS = dir
+  const sourceDir = await mkdtemp(join(tmpdir(), 'anyaudio-source-'))
+  try {
+    const file = join(sourceDir, 'module.pdf')
+    await writeFile(file, 'not a real pdf', 'utf8')
+    const queued = addPending({ name: 'XV-5080', path: file })
+    assert(queued.pending === true, 'registering returns a pending row')
+    assert(listPending().length === 1, 'one source waits to be read')
+    assert(pendingFor('xv 5080').path === file, 'another spelling finds the same row')
+    assert(listManuals().length === 0, 'registering writes no manual yet')
+    assert(removePending('XV-5080').removed === true, 'the row can be dropped')
+    assert(listPending().length === 0, 'nothing is left behind')
+    let refused = false
+    try {
+      addPending({ name: 'gone', path: join(sourceDir, 'missing.pdf') })
+    } catch (error) {
+      refused = /nothing at/.test(error.message)
+    }
+    assert(refused, 'a path that does not exist is refused')
+  } finally {
+    if (previous === undefined) delete process.env.ANYAUDIO_MANUALS
+    else process.env.ANYAUDIO_MANUALS = previous
+    await rm(dir, { recursive: true, force: true })
+    await rm(sourceDir, { recursive: true, force: true })
   }
 })
 

@@ -620,7 +620,7 @@ function ExternalRigsCard({ state, reload, notify }) {
           h(TextInput, {
             value: manualImportPath,
             placeholder: t('说明书文件或文件夹，如 D:\\manuals\\SD-20.pdf'),
-            onChange: event => setManualImportPath(event.target.value),
+            onChange: value => setManualImportPath(value),
             style: { flex: 1 },
           }),
           h(Btn, { disabled: importingManual || !manualImportPath.trim(), onClick: () => void importManual() },
@@ -723,7 +723,7 @@ function ManualEditor({ name, notify, onClose }) {
       h(TextInput, {
         value: source,
         placeholder: t('说明书文件或文件夹，如 D:\\manuals\\SD-20.pdf'),
-        onChange: event => setSource(event.target.value),
+        onChange: value => setSource(value),
         style: { flex: 1 },
       }),
       h(Btn, { disabled: importing || !source.trim(), onClick: () => void importFrom() }, importing ? t('读取中…') : t('从文件/文件夹导入')),
@@ -756,6 +756,7 @@ function PluginWorkbench({ notify }) {
   const [chosen, setChosen] = useState('')
   const [busy, setBusy] = useState('')
   const [manual, setManual] = useState(null)
+  const [importPath, setImportPath] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -812,6 +813,28 @@ function PluginWorkbench({ notify }) {
     }
   }
 
+  // A preset the plugin's own window saved (or a .fxp from another install) is
+  // a file somewhere on disk; the list above only shows what the scan found.
+  const importFile = async () => {
+    const file = importPath.trim()
+    if (!file || !chosenRow) return
+    const base = (file.split(/[\\/]/).pop() || 'preset').replace(/\.[^.]+$/, '')
+    setBusy('file')
+    try {
+      await api('/vst/presets/import', {
+        method: 'POST',
+        body: { name: base, file, plugin: chosenRow.path, note: t('从文件导入') },
+      })
+      notify(t('已登记预设「{0}」', base))
+      setImportPath('')
+      await load()
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
   if (!library) return h(Card, { title: t('插件') }, h('div', { style: S.desc }, t('正在扫描插件…')))
 
   return [
@@ -859,6 +882,17 @@ function PluginWorkbench({ notify }) {
             )),
           )
           : h('div', { style: S.desc }, t('这个插件还没有预设。在它的窗口里调好音色另存一份，这里就能扫到。')),
+        h('div', { style: { ...S.row, marginTop: 10 } },
+          h(TextInput, {
+            value: importPath,
+            placeholder: t('预设文件路径，如 C:\\…\\MyStrings.vstpreset 或 .fxp'),
+            onChange: value => setImportPath(value),
+            style: { flex: 1 },
+          }),
+          h(Btn, { disabled: busy === 'file' || !importPath.trim(), onClick: () => void importFile() },
+            busy === 'file' ? t('导入中…') : t('从文件导入')),
+        ),
+        h('div', { style: S.desc }, t('在插件窗口里调好音色，用宿主「另存预设」导出 .vstpreset（VST3）或 .fxp（VST2），把路径贴在这里。')),
       )
       : null,
     manual ? h(ManualEditor, { name: manual, notify, onClose: () => setManual(null) }) : null,

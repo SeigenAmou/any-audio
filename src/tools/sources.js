@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { FONT_EXTENSIONS, RECOMMENDED_FONTS, findRecommendedByFile, fontSearchDirs, installFont, listFonts, resolveFont } from '../audio/fonts.js'
 import { loadCatalog } from '../audio/banks.js'
-import { extractManualText, listManuals, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
+import { addPending, extractManualText, listManuals, listPending, manualsDir, pendingFor, readManual, removeManual, removePending, saveManual } from '../audio/manuals.js'
 import { DRUM_MAP, INSTRUMENTS } from '../audio/score.js'
 import { CATEGORY_LABELS, scoreTable } from '../audio/scoring.js'
 import { listSourceKinds } from '../audio/sources.js'
@@ -73,7 +73,7 @@ export const sourcesToolDefinition = finalizeTool({
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_import', 'manual_remove'], description: 'What to do; defaults to "list". "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_import" reads a manual that came as a file or a folder (.txt .md .pdf .docx .html .mhtml — a folder of one-page HTML is merged), "manual_remove" deletes one.' },
+      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_import', 'manual_remove', 'manuals_pending', 'manual_parse'], description: 'What to do; defaults to "list". "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_import" registers a manual by path (it is extracted later, when the source is about to be used; add "parse": true to extract right now), "manuals_pending" lists the registered-but-not-yet-read manuals, "manual_parse" extracts one of those now, "manual_remove" deletes one.' },
       id: { type: 'string', description: 'Recommended source/bank id for install, default "generaluser".' },
       url: { type: 'string', description: 'Direct URL of a custom SoundFont to install.' },
       fromPath: { type: 'string', description: 'Local SoundFont path to install (useful when downloads are blocked).' },
@@ -82,7 +82,8 @@ export const sourcesToolDefinition = finalizeTool({
       query: { type: 'string', description: 'Filter preset names, e.g. "piano", "koto", "shakuhachi".' },
       limit: { type: 'number', description: 'Max presets to list, default 60.' },
       name: { type: 'string', description: 'With "manual"/"manual_set"/"manual_import"/"manual_remove": which source the notes are about, e.g. "SD-20" or a saved hardware rig name.' },
-      path: { type: 'string', description: 'With "manual_import": the manual file, or a folder of them, to read.' },
+      path: { type: 'string', description: 'With "manual_import": the manual file, or a folder of them, to register.' },
+      parse: { type: 'boolean', description: 'With "manual_import": extract the text now instead of only registering the path.' },
       text: { type: 'string', description: 'With "manual_set": the notes themselves (markdown).' },
     },
   },
@@ -118,6 +119,14 @@ export const sourcesToolDefinition = finalizeTool({
         ].join('\n')
       }
       if (value.action === 'manual') return value.text
+      if (value.action === 'manuals_pending') {
+        const rows = value.pending ?? []
+        return rows.length
+          ? [`Manuals registered but not read yet (${rows.length}):`,
+            ...rows.map(row => `- ${row.name} → ${row.path}${row.addedAt ? ` (${row.addedAt.slice(0, 10)})` : ''}`),
+            'Run action "manual_parse" with the name before composing for that source, then action "manual" to read the result.'].join('\n')
+          : 'No manuals are waiting to be read.'
+      }
       if (value.action === 'manual_import') {
         return [
           value.message,
@@ -201,8 +210,21 @@ export const sourcesToolDefinition = finalizeTool({
     if (action === 'manual_import') {
       const source = String(args.path ?? args.fromPath ?? '').trim()
       if (!source) throw new Error('manual_import needs "path" — a manual file (.txt/.md/.pdf/.docx/.html/.mhtml) or a folder of them')
-      const extracted = await extractManualText(resolve(source), { maxChars: MANUAL_EXTRACT_CHARS })
+      const resolved = resolve(source)
+      if (args.parse !== true) {
+        const queued = addPending({ name: args.name, path: resolved, note: args.note })
+        return {
+          ok: true,
+          action,
+          name: queued.name,
+          path: queued.path,
+          pending: true,
+          message: `Registered ${resolved} for "${queued.name}"; nothing was extracted yet. Before composing for this source, run action "manual_parse" with name "${queued.name}" to read it, or pass "parse": true next time to extract right away.`,
+        }
+      }
+      const extracted = await extractManualText(resolved, { maxChars: MANUAL_EXTRACT_CHARS })
       const saved = saveManual(args.name, extracted.text)
+      removePending(args.name)
       return {
         ok: true,
         action,
@@ -215,6 +237,33 @@ export const sourcesToolDefinition = finalizeTool({
         truncated: extracted.truncated,
         warnings: extracted.warnings,
         message: `Read ${extracted.read} of ${extracted.files} file(s) into ${saved.path}. This is the raw text — read it with action "manual" and write the parts a composer needs (patch numbers, CC support, limits) into the same name so the next agent gets the shape of it, not the whole page count.`,
+      }
+    }
+    if (action === 'manuals_pending') {
+      return { ok: true, action, pending: listPending(), directory: manualsDir() }
+    }
+    if (action === 'manual_parse') {
+      const row = pendingFor(args.name)
+      if (!row) {
+        const waiting = listPending().map(entry => entry.name).join(', ') || 'none'
+        throw new Error(`nothing is registered for "${String(args.name ?? '')}". Waiting: ${waiting}. Register one with action "manual_import" and a path.`)
+      }
+      const extracted = await extractManualText(row.path, { maxChars: MANUAL_EXTRACT_CHARS })
+      const saved = saveManual(row.name, extracted.text)
+      removePending(row.name)
+      return {
+        ok: true,
+        action,
+        name: saved.name,
+        path: saved.path,
+        source: row.path,
+        bytes: saved.bytes,
+        files: extracted.files,
+        read: extracted.read,
+        chars: extracted.chars,
+        truncated: extracted.truncated,
+        warnings: extracted.warnings,
+        message: `Read ${extracted.read} of ${extracted.files} file(s) from ${row.path} into ${saved.path}. Now read it with action "manual" and write the parts a composer needs (patch numbers, CC support, limits) into the same name.`,
       }
     }
     if (action === 'manual_remove') {

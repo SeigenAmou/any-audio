@@ -305,7 +305,8 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 - **登记过的外部音源可以直接写名字**：在 设置 → AnyAudio → 音源 → 外部音源 里登记过「名字 + MIDI 端口 + 音频输入」之后，`"hw": "SD-20"` 就等于同时写了 `port`、`captureDevice`、`latencyMs`、`voices`。轨上再写的字段会覆盖登记值（比如只改 `channel`）。名字没登记就照旧当端口名用，不会报错。
 - **VST 插件也有说明书**：说明书不限于硬件音源，插件同样可以挂一篇——名字用插件显示名（如 `JUNO-106`）或文件名。设置页「插件与音源」选中一个插件就能写、也能从厂商 PDF 或网页文件夹导入；Agent 用 `anyaudio_sources {action:"manual", name:"JUNO-106"}` 读。合成器的音色号、必须打开的开关、哪些参数不响应 CC，都写在这里，别在写声部时凭插件名猜。
-- **写声部前先看说明书**：`anyaudio_sources {action:"manuals"}` 列出所有为音源写过的说明，`{action:"manual", name:"SD-20"}` 读某一篇。说明书记的是这台模块的真实用法（哪个音色号是什么、哪些控制器不起作用、有什么坑），比从型号或说明书 PDF 推更准。**没有说明书时不要凭型号猜音色号**——问用户，然后把答案用 `{action:"manual_set", name:"SD-20", text:"…"}` 存下来，别的会话下次也能直接用。设置页 音源 → 外部音源 每条右侧也有「说明书」按钮，用户自己也能写。
+- **写声部前先看说明书**：`anyaudio_sources {action:"manuals"}` 列出已经写好的说明，`{action:"manual", name:"SD-20"}` 读某一篇。说明书记的是这台模块的真实用法（哪个音色号是什么、哪些控制器不起作用、有什么坑），比从型号或说明书 PDF 推更准。**没有说明书时不要凭型号猜音色号**——问用户，然后把答案用 `{action:"manual_set", name:"SD-20", text:"…"}` 存下来，别的会话下次也能直接用。设置页 音源 → 外部音源 每条右侧也有「说明书」按钮，用户自己也能写。
+- **厂商手册是登记制，不是一进来就读**：`{action:"manual_import", name:"…", path:"…"}` 默认只把文件/文件夹的路径记进待读清单（几百页 PDF 立刻解析既慢又会截断）。所以动手替某个音源写声部之前，先 `{action:"manuals_pending"}` 看这个音源有没有待读的手册；有就 `{action:"manual_parse", name:"…"}` 现场解析并归档，再 `{action:"manual"}` 读它，把音色号、CC 支持、限制提炼成一篇同名说明。也可以在导入时直接加 `"parse": true` 立即解析。
 - 短形式 `hw` 只写端口名；长形式还可给 `channel`（0–15，这个端口自己的通道号）、`program`（音色号）、`captureDevice`、`latencyMs`、`voices`（模块的复音数）。
 - `captureDevice` 不写就找环境变量 `ANYAUDIO_CAPTURE_DEVICE`；两者都没有会直接报错——因为「弹了但没录」会得到一条静音，比报错更难查。
 - **写设备名字，不要写索引**：`[26]` 这种序号会随 USB 重插或驱动更新重新排列，昨天的 29 今天可能变成「立体声混音」并录出 0 帧。`anyaudio_record {action:"devices"}` 给的是 `名字 — 主机 API, 声道, 采样率`，把名字原样填进 `captureDevice`。录到 0 帧时工具现在会直接说「delivered no frames」，而不是给一个空文件名。
