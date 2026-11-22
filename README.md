@@ -107,6 +107,14 @@ Node.js 22.19+ (22.x) or 24+ (bundled with DSH); ffmpeg is only needed for speec
 dsh plugin --profile desktop add dsh-any-audio
 ```
 
+To run **this fork** instead of the published package, install from the checkout:
+
+```bash
+dsh plugin --profile desktop add link:E:/path/to/any-audio
+```
+
+The profile records a link to the source directory, so later edits take effect after the plugin is reloaded (or DSH restarted) rather than after a reinstall.
+
 If DSH boots a different profile, replace `desktop` with that profile name. Restart DSH once after installing so it picks up the plugin.
 
 On a fresh install, opening a new conversation shows a six-step guide: welcome, install a sound source, install a sound pack, pick the narration engine, install the singing engine, meet the clip bay. Every step can be skipped, and **Settings → AnyAudio → Advanced → Replay the guide** brings it back.
@@ -157,6 +165,25 @@ The repository does not bundle SoundFonts. The plugin offers two **suggested** b
 
 Installing both suggested banks gives the widest coverage: GeneralUser GS stays the default, while MuseScore General joins the automatic ranking for orchestral families. Download links and extraction notes for the last two are in Settings and in [THIRD_PARTY_NOTICES.md](https://github.com/cloudoyx/any-audio/blob/main/THIRD_PARTY_NOTICES.md); keep the file names unchanged after extracting so the plugin can recognise them.
 
+## Orchestration tables
+
+Which source a piece actually used for each instrument is knowledge worth keeping — a person's own projects, a study of someone's arrangements, a studio inventory. AnyAudio reads those tables instead of asking the agent to guess.
+
+- `anyaudio_sources {action:"orchestration_import", name:"studio", path:"C:\\…\\sources.xlsx"}` imports an `.xlsx` (every worksheet), a `.csv`/`.tsv`, or a Google Sheets link (`url:"…"`, plus `proxy:"http://127.0.0.1:7881"` when the machine needs one).
+- `{action:"orchestrations"}` lists what has been imported; `{action:"orchestration", name:"studio", instrument:"Acoustic Piano"}` returns, for one instrument, the sources and presets that table recorded most often.
+- A table is CSV-shaped: `Instrument | Source | Path/Bank | Preset | Notes`, with optional section-title rows and `BPM` / `Time` lines above them. A preset cell may read `001 000 St.Piano 1`, `001 St.Concert`, or a bare name.
+- A blank cell means "not recorded". The agent should say so rather than invent a program number.
+
+## Hardware modules
+
+A part can leave the machine instead of being rendered locally. Write `"hw": "<the MIDI port of your module>"` (`SD-20`, `SC-88Pro`, `XV-5080`, `SD-90` and the like) and the notes are sent out as MIDI while the module's line output is recorded back in.
+
+- **It is real time.** One part at a time; the MIDI has to arrive before the audio can come back.
+- **The take lines itself up.** Every `hw` render starts with one short measuring note, and the recorder cuts the capture where that note actually began instead of trusting a hand-measured latency. `"align": false` turns it off.
+- **Name the input, not its index.** Windows renumbers capture devices when a USB port is replugged, so an index that worked yesterday can point somewhere else today. The failure is explicit: `the input "…" delivered no frames`.
+- **Voice count is the module's property.** `"voices": 128` makes the render warn when a part exceeds it; without it the plugin only remarks once past 64 simultaneous notes. Nothing is assumed about a particular model.
+- **A registered rig fills in the rest.** Save port, input, latency and voice count once in Settings and write `"hw": "my rack"`.
+
 ## Sound effects
 
 Effects come from the installed sound library; when a sound is not there the agent looks for CC0 online, and falls back to sampling a soundfont or synthesising it.
@@ -189,6 +216,20 @@ A part can name a plugin instead of a SoundFont instrument — a synth for a pad
 - **A patch the plugin keeps to itself.** Plugins whose sound lives behind their own editor cannot be tuned parameter by parameter, so the player saves the patch in a DAW and hands over the file: `anyaudio_vst {action:"preset", presetAction:"import", name:"warm-pad", plugin:"…", presetFile:"C:\\Users\\me\\Documents\\VST3 Presets\\…\\warm-pad.vstpreset"}`, after which the score only says `"vst": {"preset": "warm-pad"}`. The file is handed to the plugin as it is, never parsed. `.vstpreset` belongs to VST3, `.fxp` and `.fxb` to VST2. `presetAction:"scan"` lists the patches already sitting under the usual preset folders.
 - **The two bridges hear different things.** A VST2 part is rendered from a MIDI file, so `automation` controllers and the gestures in `expression` reach the plugin. A VST3 part is rendered from an audio buffer only: parameters and preset files are the ways in, and anything MIDI-shaped stays unheard.
 
+## Performance expression
+
+A note list is not a performance. `score.expression` writes the gestures a player would make, as MIDI that SoundFont, VST2 and hardware parts actually play:
+
+| Type | What it writes |
+| --- | --- |
+| `pitchbend_line` / `pitchbend_curve` | a slide, or vibrato over a span |
+| `velocity_line` | a swell or a fade across the notes |
+| `sustain` | the pedal, down and up |
+| `cc_line` / `cc_curve` | any controller, ramped or oscillating |
+| `humanize` | repeatable timing and velocity variation, seeded so the same score gives the same take |
+
+Times are seconds on the timeline, not bars. A VST3 part is rendered from an audio buffer and hears none of it — use parameters or a preset file for that side.
+
 ## Singing
 
 The singing tool synthesises a real vocal on this machine from notes and lyrics and drops it onto its own vocal track in the clip bay — audition it, adjust its level, regenerate any line. The agent calls it automatically on singing requests; no need to name the tool.
@@ -214,7 +255,9 @@ Measured speed: a three-minute song takes about 247 s on CPU and about 28.5 s on
 - **Project size caps** — a project is at most 15 minutes long and 20 tracks wide; going past either is an error.
 - **Audio only, for now** — a video can sit in the project as a reference picture, but this version does not trim, join or transition it.
 - **Tracks hold finished audio** — every clip on the timeline is an already-rendered wav/mp3 that can be auditioned on its own; MIDI, scores and parameters never go on the timeline.
-- **SoundFont and hosted VST only** — VST3 and 64-bit VST2 can be rendered; 32-bit plugins, SFZ and Kontakt libraries cannot, and converting other source formats is out of scope for this version.
+- **SoundFont and hosted VST only** — VST3 and 64-bit VST2 can be rendered; SFZ and Kontakt libraries cannot, and converting other source formats is out of scope for this version.
+- **32-bit plugins need a bridge** — they are listed (with the PE header read, not guessed) but a 64-bit host cannot load them. A bridge such as jBridge produces a 64-bit forwarding `.dll`; point the scan at that folder and it behaves like any other 64-bit VST2.
+- **Multi-output plugins are read from their main output** — a plugin that declares several stereo outputs renders its first pair; routing individual outputs to separate tracks is not exposed yet.
 - **No per-note envelope control** — attack and release come from the preset; use short notes with gaps for staccato and velocity plus expression for dynamics.
 - **Chinese instruments are GM approximations** — `guzheng` maps to Koto, `dizi` to Flute, `erhu` to Fiddle; dedicated banks will do better.
 - **Singing quality depends on the voicebank and tuning** — the plugin only provides the install channel, interface and usage.

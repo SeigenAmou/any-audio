@@ -163,6 +163,25 @@ dsh plugin --profile desktop add dsh-any-audio
 
 两套都装覆盖最广：GeneralUser GS 仍是默认音源，MuseScore General 参与管弦乐族的自动选择。后两套的下载地址与解压说明在设置页和 [THIRD_PARTY_NOTICES.md](https://github.com/cloudoyx/any-audio/blob/main/THIRD_PARTY_NOTICES.md)；解压后保持文件名不变，插件才能识别。
 
+## 配器表
+
+「某个乐器在这首曲子里用了什么音源、什么音色」是值得留下来的知识：自己的工程、别人的编曲研究、一间录音棚的库存清单。AnyAudio 直接读这类表格，而不是让模型凭型号猜。
+
+- `anyaudio_sources {action:"orchestration_import", name:"studio", path:"C:\\…\\sources.xlsx"}` 可导入 `.xlsx`（每个工作表都读）、`.csv`/`.tsv`，或 Google Sheets 链接（`url:"…"`，需要时加 `proxy:"http://127.0.0.1:7881"`）。
+- `{action:"orchestrations"}` 列出已导入的表；`{action:"orchestration", name:"studio", instrument:"Acoustic Piano"}` 给出某个乐器在这张表里最常出现的音源与音色。
+- 表格按 CSV 形状读：`Instrument | Source | Path/Bank | Preset | Notes`，允许有段落标题行，以及标题上方的 `BPM` / `Time` 行。音色单元格可以是 `001 000 St.Piano 1`、`001 St.Concert`，或只有名字。
+- 空格子表示「表里没记」。这种情况要如实说，不要替它编一个音色号。
+
+## 硬件音源
+
+声部可以不在这台机器上渲染，而是送出去。写 `"hw": "<你模块的 MIDI 端口>"`（`SD-20`、`SC-88Pro`、`XV-5080`、`SD-90` 这类），音符就以 MIDI 送出，同时把模块的线路输出录回来。
+
+- **是实时。** 一次一个声部，MIDI 得先送到，声音才回得来。
+- **录音自己对齐。** 每次 `hw` 渲染先发一个很短的测量音，再按那个音真正的起点裁切采集，而不是相信一个手填的延迟；`"align": false` 可关闭。
+- **写输入设备的名字，别写序号。** Windows 在 USB 重插后会重排采集设备，昨天的序号今天可能指向别处。失败会说清楚：`the input "…" delivered no frames`。
+- **复音数是模块自己的属性。** 写 `"voices": 128` 后，超过它会给警告；不写时只在同时超过 64 个音时提醒一次。不对任何具体型号做假设。
+- **登记过的音源可以一行写完。** 在设置里存好端口、输入、延迟与复音数，乐谱里只写 `"hw": "my rack"`。
+
 ## 音效
 
 音效取自已安装的音效库，库里没有时 Agent 会找线上 CC0，再没有才用音源采样或程序化合成。
@@ -184,6 +203,20 @@ dsh plugin --profile desktop add dsh-any-audio
 | **DeepSeek TTS**（可选） | 不需要额外配置 | 用本机 DSH 登录的 DeepSeek 账号。只有两个音色（`stella` 女声、`tide` 男声），**不能调语速/音高/音量**；按字数计费，需账号有余额。 |
 
 MiMo 与 DeepSeek 都是手动选项：保存 Key 或登录账号都不会自动切换默认引擎，要显式选择。MiMo 的默认音色 `mimo_default` 由服务端集群决定，不同区域可能不同，本版本只支持普通 Open Platform Key。DeepSeek 的 Key 就是 DSH 自己登录用的那一把，插件不会写入或删除它——删了会连带影响 DSH 的模型访问。
+
+## 演奏表情
+
+一串音符不是一次演奏。`score.expression` 把演奏者的动作写成 MIDI，SoundFont、VST2 与硬件声部都真的会演奏出来：
+
+| 类型 | 写什么 |
+| --- | --- |
+| `pitchbend_line` / `pitchbend_curve` | 滑音，或一段揉弦 |
+| `velocity_line` | 渐强、渐弱 |
+| `sustain` | 踏板踩下与抬起 |
+| `cc_line` / `cc_curve` | 任意控制器，线性或振荡 |
+| `humanize` | 可复现的时值/力度抖动，同一条乐谱每次给出同一次演奏 |
+
+时间用时间线上的**秒**，不是小节。VST3 声部是从音频缓冲渲染的，听不到这些——那一侧要用参数或预设文件。
 
 ## 唱歌
 
@@ -210,7 +243,9 @@ npm 包里不带这些东西，首次使用需下载安装。
 - **工程规模上限**：单个工程最长 15 分钟、最多 20 轨，超出会直接报错。
 - **这版只剪音频**：视频可以作为参考画面一起放进来，但画面上不做裁剪、拼接或转场。
 - **轨道里必须是成品音频**：放在时间轴上的每一段都是已经渲染好的 wav/mp3，可以单独试听；MIDI、乐谱和参数不会直接进时间轴。
-- **只支持 SoundFont**：不支持 SFZ、Kontakt、VST；转换其它音源格式不在本版范围。
+- **SoundFont 与挂载的 VST**：VST3 与 64 位 VST2 可以渲染；SFZ 与 Kontakt 音色库不行，转换其它音源格式不在本版范围。
+- **32 位插件要自己桥接**：它们会被列出（读 PE 头判断，不靠扩展名猜），但 64 位宿主加载不了。用 jBridge 这类工具桥接后会得到一个 64 位转发 `.dll`，把扫描目录指向那里，它就和普通 64 位 VST2 一样。
+- **多输出插件只读主输出**：声明了多组立体声输出的插件，渲染的是第一组；把各组输出分别送到不同轨道还没做。
 - **没有逐音符包络控制**：发音与释放由预设决定；断奏用短音符加缝隙，强弱用力度与表情控制。
 - **中国乐器是 GM 近似**：`guzheng` 映射 Koto、`dizi` 映射 Flute、`erhu` 映射 Fiddle；专用音源会更好。
 - **唱歌音质由声库和调教决定**：插件只提供安装渠道、接口和使用方式。
