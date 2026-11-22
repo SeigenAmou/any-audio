@@ -275,7 +275,7 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 **先看手册里的表，再决定怎么写 bank**：乐器分类几乎都写在手册的 bank 表里——Orchestral 是 MSB 0 / LSB 0–6（0 弦乐组、1 独奏弦乐、2 铜管组、3 独奏铜管、4 木管、5 键盘打击乐、6 节奏组），Super Quartet 是 MSB 0–3（钢琴/吉他/贝斯/鼓）。所以读手册时要主动搜 `PC` `MSB` `LSB` `Bank` `CC#` `Controller` `Note#` 这些字眼，把「哪个 bank/program 是哪个音色」抄进说明书；不抄，写声部时就只能瞎猜。
 
-**桥接会吞控制器的先说清楚**：实测经 jBridge 的 Super Quartet 收不到 CC0（发了也不换类别，只能靠 `.fxp` 预设）；同一台机器上经 jBridge 的 Orchestral **CC0/CC32 都通**，LSB 0–6 逐个换类别、LSB 6 就是节奏组（高频占比 0.99、频谱平坦度 0.32，一听就是鼓）。所以「桥接插件收不到 CC」不是通则，每个插件都要自己试一次——试法是同一通道弹同一个音、只改 bank，比较 rms 与频谱；没有差异就是没通。
+**桥接到底转发哪一字节，要自己试**：经 jBridge 的 Super Quartet 只认 **CC32（LSB）**——LSB 0/1/2/3 分别是 Piano/Guitar/Bass/Drums（实测 rms 0.004471 / 0.002598 / 0.001577 / 0.000896），而 CC0（MSB）改成 1/2/3 时 rms 恒定 0.021036，说明被桥接吞了；同一台机器上经 jBridge 的 Orchestral 则 **CC0 与 CC32 都通**（MSB 0 / LSB 0–6 分七类，LSB 6 是节奏组：高频占比 0.99、频谱平坦度 0.32）。所以「桥接插件收不到 CC」不是通则，每个插件都要自己试一次——试法是同一通道弹同一个音、只改一个字节，比较 rms 与频谱；数字完全一样就是没通。谱面上两个字节都能写：`bank` 是 MSB、`bankLsb` 是 LSB。
 
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 
