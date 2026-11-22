@@ -271,6 +271,8 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 **两条通道的区别要说清，别混用**：VST2 声部送进去的是 MIDI 文件，所以谱面的 `automation`（CC 事件）真的会到达插件——插件若开了 MIDI Learn / 固定 CC 映射（例如 SRX 的 CC7 音量、CC91 混响发送），可以用 `{"track":"keys","controller":7,"points":[[0,127],[4,40]]}` 这样推它。VST3 声部走 pedalboard，插件只收到音频缓冲、收不到 MIDI，所以对 VST3 来说参数只有两条路：`params`（参数名，`action:"info"` 里能查到）和预设文件。
 
+**一个插件里的多个模块（多音色插件）**：GM/多音色音源（Super Quartet、Hyper Canvas、XV-5080 这类）一个实例里放多个模块，每个模块吃一条 MIDI 通道——谱面里给 `"vst"` 写 `"channel"` 就是指定它走哪条通道，同一个插件路径的多条轨道可以各走各的通道。`bank` 与 `program` 会在曲首以 CC0/PC 发给插件，但**经 jBridge 加载的 Super Quartet 实测收不到 CC0**（bank select 被桥接吞掉），`program`、CC7、CC10、CC91 都正常；所以跨模块挑音色不要指望 `bank`，先在插件界面里把这个模块调好、另存 `.fxp`，再用 `"vst":{"preset":"…"}` 加载，通道号仍写在 `channel` 上。
+
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 
 有些声音既不在 SoundFont 里也不在插件里，而在机器外面：一台 EDIROL SD-20、一块机架音源、一支接在声卡上的麦克风。它们自己发声，宿主只能从线路输入把它听回来。

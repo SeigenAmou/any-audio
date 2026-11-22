@@ -1580,11 +1580,31 @@ await test('a score can hand one part to a plugin without stealing a SoundFont c
   }, { sampleRate: 48000 })
   const synth = compiled.tracks.find((track) => track.name === 'synth')
   assert(synth.vst?.plugin === 'C:/plugins/Juno.vst3', 'the short form "vst": "path" is kept')
-  assert(synth.channel === 0, 'a plugin part sits on channel 0')
+  assert(synth.channel === 0, 'a plugin part sits on channel 0 unless it asks for another')
   const fontChannels = compiled.tracks.filter((track) => !track.vst).map((track) => track.channel)
   assert(fontChannels.length === 2 && new Set(fontChannels).size === 2, 'the SoundFont parts still get distinct channels')
-  assert(!synth.events.some((event) => event.type === 'bank' || event.type === 'program'),
-    'a plugin part carries no bank/program events')
+  const synthPatch = synth.events.filter((event) => event.type === 'bank' || event.type === 'program')
+  assert(synthPatch.length === 1 && synthPatch[0].type === 'program' && synthPatch[0].channel === 0,
+    'a plugin part is told its patch on its own channel, and no bank unless it asked')
+  // A multi-timbral instrument (one plugin instance, one channel per module)
+  // needs both the channel and the bank: Super Quartet picks piano/guitar/bass/
+  // drums with CC0 0/1/2/3 and answers each module on its own MIDI channel.
+  const multi = compileScore({
+    tracks: [
+      { name: 'piano', vst: { plugin: 'C:/sq.dll', channel: 0, bank: 0 }, instrument: 0, notes: [[0, 1, 60, 90]] },
+      { name: 'bass', vst: { plugin: 'C:/sq.dll', channel: 2, bank: 2 }, instrument: 33, notes: [[0, 1, 36, 90]] },
+    ],
+  })
+  const bass = multi.tracks.find((track) => track.name === 'bass')
+  assert(bass.channel === 2 && bass.vst.channel === 2, 'a plugin part keeps the channel it asked for')
+  assert(bass.vst.bank === 2, 'the bank survives normalization')
+  const bankEvent = bass.events.find((event) => event.type === 'bank')
+  const programEvent = bass.events.find((event) => event.type === 'program')
+  assert(bankEvent && bankEvent.bank === 2 && bankEvent.channel === 2, 'the bank goes out as a bank event on that channel')
+  assert(programEvent && programEvent.program === 33 && programEvent.channel === 2, 'the program goes out on the same channel')
+  assert(bankEvent.t === 0 && programEvent.t === 0, 'bank and program sit at the start')
+  const cc0 = bass.events.filter((event) => event.type === 'cc' && event.controller === 0)
+  assert(cc0.length === 0, 'a vst part does not emit a raw CC0 — the bank event carries it')
 
   // The SoundFont engine must name the reason instead of playing the default
   // piano for a part it cannot render.

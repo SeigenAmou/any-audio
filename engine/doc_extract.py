@@ -257,12 +257,43 @@ def main() -> int:
     body = "\n\n".join(sections)
     truncated = False
     if len(body) > args.max_chars:
-        keep = body[: args.max_chars]
-        cut = keep.rfind("\n\n## ")
-        if cut > args.max_chars // 2:
-            keep = keep[:cut]
-        body = keep.rstrip() + f"\n\n[truncated: the manual continues beyond {len(keep)} characters]"
         truncated = True
+        # Keep whole sections while they fit; for the rest keep each section's
+        # opening lines instead of dropping it outright. A card that says
+        # "section X exists but was not read" is useful; a card that silently
+        # ends mid-sentence is not — the reader cannot tell whether the manual
+        # is short or was cut, and the one parameter they needed may be the one
+        # that fell off the end.
+        sections = body.split("\n\n## ")
+        kept = [sections[0]]
+        used = len(sections[0])
+        squeezed = []
+        for section in sections[1:]:
+            room = args.max_chars - used - 4
+            if room <= 0:
+                squeezed.append((section.split("\n", 1)[0].strip(), len(section)))
+                continue
+            if len(section) <= room:
+                kept.append(section)
+                used += len(section) + 4
+                continue
+            lines = section.split("\n")
+            head = "\n".join(lines[:20])
+            title = lines[0].strip()
+            if room > 600 and len(head) > room - 200:
+                head = head[: room - 220].rsplit("\n", 1)[0]
+            if room > 600 and len(head) <= room - 200:
+                kept.append(head)
+                used += len(head) + 4
+            squeezed.append((title, len(section)))
+        body = "\n\n## ".join(kept).rstrip()
+        if squeezed:
+            names = ", ".join(title for title, _ in squeezed[:24])
+            more = "" if len(squeezed) <= 24 else f" (+{len(squeezed) - 24} more)"
+            body += (
+                f"\n\n[truncated: {len(squeezed)} section(s) are listed below but only their opening"
+                f" lines are kept — read the source file for the rest: {names}{more}]"
+            )
 
     if empty:
         warnings.append(f"{len(empty)} file(s) held no readable text: " + ", ".join(empty[:8]))

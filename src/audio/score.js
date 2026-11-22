@@ -189,7 +189,18 @@ function normalizeVst(spec, trackName) {
     ? raw.controls.filter((entry) => Array.isArray(entry) && entry.length >= 3 && entry.every((value) => Number.isFinite(Number(value))))
       .map((entry) => [Number(entry[0]), Number(entry[1]), Number(entry[2])])
     : undefined
-  return { plugin, params, ...(controls ? { controls } : {}) }
+  // A multi-timbral instrument (one instance, many channels) needs to know
+  // which of its MIDI channels and which bank this part answers on; single-part
+  // synths ignore both. Values outside the MIDI ranges are clamped, not thrown:
+  // a wrong channel should sound wrong in an obvious way, not kill the render.
+  const channel = Number.isInteger(raw.channel) ? Math.max(0, Math.min(15, raw.channel)) : undefined
+  const bank = Number.isInteger(raw.bank) ? Math.max(0, Math.min(127, raw.bank)) : undefined
+  return {
+    plugin, params,
+    ...(controls ? { controls } : {}),
+    ...(channel !== undefined ? { channel } : {}),
+    ...(bank !== undefined ? { bank } : {}),
+  }
 }
 
 /**
@@ -421,8 +432,12 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     const hw = vst ? undefined : normalizeHw(track.hw, name, externals)
     const external = Boolean(vst || hw)
     let channel
-    if (external) {
-      channel = 0
+    if (vst) {
+      // A plugin part does not consume a SoundFont channel, but a multi-timbral
+      // plugin does listen on one, so the part's own number is passed through.
+      channel = Number.isInteger(vst.channel) ? vst.channel : 0
+    } else if (external) {
+      channel = Number.isInteger(hw?.channel) ? hw.channel : 0
     } else {
       channel = Number.isInteger(track.channel) ? track.channel : drums ? 9 : undefined
       if (channel === undefined) {
@@ -446,6 +461,13 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
 
     const events = []
     const program = drums ? 0 : instrument.program
+    if (vst) {
+      // VST2 parts travel as a MIDI file, so bank/program really reach the
+      // plugin — that is how a multi-timbral instrument picks one of its
+      // modules (Super Quartet: CC0 0/1/2/3 selects piano/guitar/bass/drums).
+      if (Number.isInteger(vst.bank)) events.push({ t: 0, type: 'bank', channel, bank: vst.bank })
+      events.push({ t: 0, type: 'program', channel, program })
+    }
     if (!external) {
       events.push({ t: 0, type: 'bank', channel, bank: instrument.bank })
       events.push({ t: 0, type: 'program', channel, program })

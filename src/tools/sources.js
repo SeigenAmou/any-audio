@@ -16,7 +16,23 @@ import { finalizeTool, formatBytes, relativeToWorkspace, textRenderer, workspace
  * PDF would be rejected. 70k characters keeps roughly 200 KB of Japanese and a
  * comfortable English manual, and the extractor says when it truncated.
  */
-const MANUAL_EXTRACT_CHARS = 70000
+const MANUAL_EXTRACT_CHARS = 200000
+
+/** A note sheet is capped at 256 KB. A manual that reads past that is not cut
+ *  at an arbitrary character: the limit is applied on a paragraph boundary and
+ *  the card says what did not fit, so the reader knows the rest is in the
+ *  source file rather than believing the manual ends there. */
+function fitManualText(text) {
+  const limit = 250000
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes <= limit) return text
+  let cut = Math.floor(text.length * 0.6)
+  while (cut > 1000 && Buffer.byteLength(text.slice(0, cut), 'utf8') > limit) cut = Math.floor(cut * 0.9)
+  const boundary = text.lastIndexOf('\n\n', cut)
+  if (boundary > cut * 0.5) cut = boundary
+  const head = text.slice(0, cut).trimEnd()
+  return head + `\n\n[stored: ${bytes} bytes were read; the first ${Buffer.byteLength(head, 'utf8')} bytes are below and the rest is still in the source file — re-read that section there if you need it]`
+}
 
 function groupInstruments() {
   const families = {
@@ -223,7 +239,7 @@ export const sourcesToolDefinition = finalizeTool({
         }
       }
       const extracted = await extractManualText(resolved, { maxChars: MANUAL_EXTRACT_CHARS })
-      const saved = saveManual(args.name, extracted.text)
+      const saved = saveManual(args.name, fitManualText(extracted.text))
       removePending(args.name)
       return {
         ok: true,
@@ -249,7 +265,7 @@ export const sourcesToolDefinition = finalizeTool({
         throw new Error(`nothing is registered for "${String(args.name ?? '')}". Waiting: ${waiting}. Register one with action "manual_import" and a path.`)
       }
       const extracted = await extractManualText(row.path, { maxChars: MANUAL_EXTRACT_CHARS })
-      const saved = saveManual(row.name, extracted.text)
+      const saved = saveManual(row.name, fitManualText(extracted.text))
       removePending(row.name)
       return {
         ok: true,
