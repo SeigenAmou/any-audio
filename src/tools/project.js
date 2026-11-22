@@ -27,7 +27,7 @@ import { findFfmpeg, finalizeTool, nowStamp, outputDir, relativeToWorkspace, res
 import { readConfig } from '../config.js'
 import { providerInfo, voiceDisplayName } from '../audio/tts-providers.js'
 
-const MODES = ['create', 'add_material', 'read', 'update', 'render']
+const MODES = ['create', 'add_material', 'place', 'read', 'update', 'render']
 
 /**
  * The narration engine and voice the person picked in Settings → AnyAudio.
@@ -382,6 +382,92 @@ async function runAddMaterial(workspaceRoot, args, exec) {
   }
 }
 
+/**
+ * `mode:"place"` — put many clips down in one call.
+ *
+ * A person comparing six takes should not need six round trips: one `items`
+ * array either names a file to import or a material already in the project, and
+ * each item lands as its own clip. `startSec` may be omitted, in which case the
+ * clip starts where the previous one on that track ended — the common case for
+ * takes laid end to end.
+ */
+async function runPlace(workspaceRoot, args, exec) {
+  const items = Array.isArray(args.items) ? args.items : []
+  if (items.length === 0) throw new Error('items must contain at least one clip')
+  if (items.length > 120) throw new Error(`items has ${items.length} entries; 120 is the most one call may place`)
+
+  const project = await readProject(workspaceRoot, args.projectId)
+  const placed = []
+  const known = new Set()
+  let lastOnTrack = new Map()
+
+  for (const [index, raw] of items.entries()) {
+    const item = raw ?? {}
+    const trackName = item.trackName || args.trackName
+    if (!trackName) throw new Error(`items[${index}] has no trackName (and the call has no default trackName)`)
+
+    let material = null
+    if (item.materialId) {
+      const indexData = await readMaterialIndex(workspaceRoot, project.id)
+      material = indexData.materials.find((entry) => entry.id === item.materialId)
+      if (!material) {
+        const ids = indexData.materials.map((entry) => entry.id).join(', ')
+        throw new Error(`items[${index}]: no material "${item.materialId}". This project holds: ${ids || 'nothing yet'}`)
+      }
+    } else if (item.path || item.sourcePath) {
+      const file = item.path ?? item.sourcePath
+      const absolute = isAbsolute(file) ? file : resolve(workspaceRoot, String(file))
+      const before = new Set((await readMaterialIndex(workspaceRoot, project.id)).materials.map((entry) => entry.id))
+      try {
+        await importFile(workspaceRoot, project.id, absolute, { findFfmpeg, signal: exec?.signal })
+      } catch (error) {
+        throw new Error(`items[${index}]: could not import ${absolute}: ${error.message}`)
+      }
+      const after = await readMaterialIndex(workspaceRoot, project.id)
+      material = after.materials.find((entry) => !before.has(entry.id)) ?? null
+      if (!material) throw new Error(`items[${index}]: ${absolute} produced no material entry`)
+    } else {
+      throw new Error(`items[${index}] needs "materialId" (already in the project) or "path" (a file to import)`)
+    }
+
+    const track = ensureTrack(project, { name: trackName, category: item.category || args.category || 'other' })
+    const fallbackStart = lastOnTrack.get(track.id) ?? 0
+    const clip = placeClip(track, material, {
+      startSec: item.startSec ?? fallbackStart,
+      inSec: item.inSec,
+      outSec: item.outSec,
+      gainDb: item.gainDb,
+      pan: item.pan,
+      fadeInSec: item.fadeInSec,
+      fadeOutSec: item.fadeOutSec,
+      label: item.label,
+    })
+    lastOnTrack.set(track.id, clip.startSec + (clip.outSec - clip.inSec))
+    placed.push({
+      index,
+      id: clip.id,
+      trackName: track.name,
+      materialId: material.id,
+      startSec: clip.startSec,
+      inSec: clip.inSec,
+      outSec: clip.outSec,
+      label: clip.label,
+    })
+    known.add(track.name)
+  }
+
+  const end = contentEndSec(project)
+  if (end > LIMITS.durationSec) {
+    throw new Error(`these clips would make the project ${end.toFixed(1)}s long; the limit is ${LIMITS.durationSec}s`)
+  }
+  await saveProject(workspaceRoot, project, {
+    by: 'agent',
+    note: args.note || `放上 ${placed.length} 段素材（${[...known].join('、')}）`,
+  })
+  const updated = await readProject(workspaceRoot, project.id)
+  return { ok: true, mode: 'place', placed, ...(await projectSummary(workspaceRoot, updated)) }
+}
+
 async function runRead(workspaceRoot, args) {
   if (!args.projectId) {
     const rows = await listProjects(workspaceRoot)
@@ -493,7 +579,7 @@ export const projectToolDefinition = finalizeTool({
   parameters: {
     type: 'object',
     properties: {
-      mode: { type: 'string', enum: MODES, description: 'What to do: create, add_material, read, update or render.' },
+      mode: { type: 'string', enum: MODES, description: 'What to do: create, add_material, place, read, update or render.' },
       projectId: { type: 'string', description: 'The project id. Required for every mode except create, and optional for read (omit to list projects).' },
       name: { type: 'string', description: 'create: the project name.' },
       sampleRate: { type: 'number', description: 'create: internal sample rate, default 48000.' },
@@ -514,6 +600,28 @@ export const projectToolDefinition = finalizeTool({
       fadeInSec: { type: 'number', description: 'add_material: fade-in length in seconds.' },
       fadeOutSec: { type: 'number', description: 'add_material: fade-out length in seconds.' },
       label: { type: 'string', description: 'add_material: the clip label shown on the timeline.' },
+      items: {
+        type: 'array',
+        description: 'place: the clips to lay down, in order. Each item names a "materialId" already in the project or a "path" to import, plus "trackName" and optionally "startSec" (omit to start where the previous clip on that track ended), "inSec", "outSec", "gainDb", "pan", "fadeInSec", "fadeOutSec", "label", "category". One call places up to 120 clips.',
+        items: {
+          type: 'object',
+          properties: {
+            materialId: { type: 'string', description: 'An existing material id (see mode "read").' },
+            path: { type: 'string', description: 'A file to import and place, relative to the workspace or absolute.' },
+            trackName: { type: 'string', description: 'The track this clip belongs on; created when it does not exist.' },
+            startSec: { type: 'number', description: 'Where the clip starts; omit to continue after the previous clip on the same track.' },
+            inSec: { type: 'number', description: 'The in point within the material.' },
+            outSec: { type: 'number', description: 'The out point within the material.' },
+            gainDb: { type: 'number', description: 'Clip gain in dB.' },
+            pan: { type: 'number', description: 'Clip pan, -1 left to +1 right.' },
+            fadeInSec: { type: 'number' },
+            fadeOutSec: { type: 'number' },
+            label: { type: 'string' },
+            category: { type: 'string', enum: TRACK_CATEGORIES, description: 'Track category when the track is created.' },
+          },
+          additionalProperties: false,
+        },
+      },
       changes: {
         type: 'array',
         description: 'update: the edits to apply, each addressing the project, a track or a clip by id.',
@@ -690,6 +798,7 @@ export const projectToolDefinition = finalizeTool({
     switch (mode) {
       case 'create': return runCreate(workspaceRoot, args)
       case 'add_material': return runAddMaterial(workspaceRoot, args, exec)
+      case 'place': return runPlace(workspaceRoot, args, exec)
       case 'read': return runRead(workspaceRoot, args)
       case 'update': return runUpdate(workspaceRoot, args)
       case 'render': return runRender(workspaceRoot, args, exec)

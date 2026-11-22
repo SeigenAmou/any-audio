@@ -2081,5 +2081,31 @@ await test('an orchestration table says which source each instrument came from',
   assert(summary.sources.some(row => row.name.includes('Super Quartet')), 'sources are counted')
 })
 
+await test('many clips land in one call, and a clip with no start follows the one before it', async () => {
+  const projectId = await freshAttach()
+  const a = await writeWav(join(tmpDir, 'place-a.wav'), tone(1.0, 48000))
+  const b = await writeWav(join(tmpDir, 'place-b.wav'), tone(0.8, 48000))
+  const placed = await tools.get('anyaudio_project').execute({
+    mode: 'place',
+    projectId,
+    items: [
+      { path: a, trackName: 'lead', label: 'A' },
+      { path: b, trackName: 'lead', label: 'B' },
+      { path: b, trackName: 'bass', startSec: 2.5, label: 'C' },
+    ],
+  }, exec)
+  assert(placed.placed.length === 3, 'all three clips are placed')
+  assert(placed.placed[1].startSec === 1, 'the second clip starts where the first ended')
+  assert(placed.placed[2].startSec === 2.5, 'an explicit start is kept')
+  assert(placed.tracks.length === 2, 'two tracks were created')
+
+  let message = ''
+  try {
+    await tools.get('anyaudio_project').execute({ mode: 'place', projectId, items: [] }, exec)
+  } catch (error) {
+    message = error.message
+  }
+  assert(/at least one clip/.test(message), 'an empty items list is refused')
+})
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
