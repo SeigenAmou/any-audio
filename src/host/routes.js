@@ -942,6 +942,33 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
           return json(res, 400, { ok: false, error: describeError(error) })
         }
       }
+      if (method === 'GET' && path === `${PREFIX}/orchestrations`) {
+        return json(res, 200, { ok: true, tables: listOrchestrations() })
+      }
+      if (method === 'GET' && path === `${PREFIX}/orchestrations/read`) {
+        const table = readOrchestration(url.searchParams.get('name') ?? '')
+        if (!table) return json(res, 404, { ok: false, error: 'no orchestration table with that name' })
+        return json(res, 200, { ok: true, table })
+      }
+      if (path === `${PREFIX}/orchestrations/import`) {
+        try {
+          const saved = await importOrchestrationSource({
+            name: body.name,
+            path: body.path ? resolve(String(body.path)) : null,
+            url: body.url ?? null,
+            proxy: body.proxy ?? null,
+            sheet: body.sheet ?? null,
+          })
+          return json(res, 200, { ok: true, ...saved })
+        } catch (error) {
+          return json(res, 400, { ok: false, error: describeError(error) })
+        }
+      }
+      if (path === `${PREFIX}/orchestrations/remove`) {
+        const name = String(body.name ?? '').trim()
+        if (!name) return json(res, 400, { ok: false, error: 'name is required' })
+        return json(res, 200, { ok: removeOrchestration(name), name })
+      }
       if (path === `${PREFIX}/manuals/import`) {
         try {
           const source = String(body.path ?? '').trim()

@@ -899,11 +899,125 @@ function PluginWorkbench({ notify }) {
   ]
 }
 
+function OrchestrationCard({ notify }) {
+  const [tables, setTables] = useState([])
+  const [name, setName] = useState('')
+  const [path, setPath] = useState('')
+  const [url, setUrl] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [busy, setBusy] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api('/orchestrations')
+      setTables(data.tables ?? [])
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }, [notify])
+
+  useEffect(() => { void load() }, [load])
+
+  const runImport = async () => {
+    const label = name.trim()
+    if (!label) {
+      notify(t('给这张表起个名字'), 'error')
+      return
+    }
+    if (!path.trim() && !url.trim()) {
+      notify(t('填一个文件路径或一个 Google Sheets 链接'), 'error')
+      return
+    }
+    setBusy('import')
+    try {
+      const saved = await api('/orchestrations/import', {
+        method: 'POST',
+        body: {
+          name: label,
+          path: path.trim() || null,
+          url: url.trim() || null,
+          proxy: proxy.trim() || null,
+        },
+      })
+      notify(t('已导入「{0}」：{1} 行，{2} 首', label, saved.rows ?? 0, saved.sections ?? 0))
+      setName('')
+      setPath('')
+      setUrl('')
+      await load()
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const drop = async (table) => {
+    if (!window.confirm(t('删除配器表「{0}」？', table.name ?? table.id))) return
+    try {
+      await api('/orchestrations/remove', { method: 'POST', body: { name: table.name ?? table.id } })
+      await load()
+      notify(t('已删除'))
+    } catch (error) {
+      notify(error.message, 'error')
+    }
+  }
+
+  return h(Card, {
+    title: t('配器表'),
+    desc: t('别人写同类曲子时，每件乐器用的是哪个音源、哪个 bank、哪个 preset——写曲前先查它，比自己猜音色有依据。支持 .csv、.xlsx（每个工作表一张表）或 Google Sheets 链接。'),
+  }, [
+    tables.length
+      ? h('div', { style: S.list }, tables.map(table => h('div', { style: S.row, key: table.id }, [
+          h('span', { style: S.mono }, table.name ?? table.id),
+          h('span', { style: S.desc }, t('{0} 行 · {1} 首', table.rowCount ?? 0, table.sections ?? 0)),
+          h('span', { style: { flex: 1 } }),
+          h(Btn, { onClick: () => void drop(table) }, t('删除')),
+        ])))
+      : h('div', { style: S.desc }, t('还没有配器表。下面导入一张试试。')),
+    h('div', { style: S.row }, [
+      h(TextInput, {
+        value: name,
+        placeholder: t('表名，例如 Touhou Sound Sources'),
+        onChange: value => setName(value),
+        style: { flex: 1 },
+      }),
+    ]),
+    h('div', { style: S.row }, [
+      h(TextInput, {
+        value: path,
+        placeholder: t('本地文件：D:\…\配器表.xlsx'),
+        onChange: value => setPath(value),
+        style: { flex: 1 },
+      }),
+    ]),
+    h('div', { style: S.row }, [
+      h(TextInput, {
+        value: url,
+        placeholder: t('或 Google Sheets 链接 https://docs.google.com/spreadsheets/d/…'),
+        onChange: value => setUrl(value),
+        style: { flex: 1 },
+      }),
+      h(TextInput, {
+        value: proxy,
+        placeholder: t('代理（可选）http://127.0.0.1:7881'),
+        onChange: value => setProxy(value),
+        style: { width: '230px' },
+      }),
+    ]),
+    h('div', { style: S.row }, [
+      h('span', { style: { flex: 1 } }),
+      h(Btn, { disabled: busy === 'import', onClick: () => void runImport() },
+        busy === 'import' ? t('导入中…') : t('导入')),
+    ]),
+  ])
+}
+
 function InstrumentsTab({ state, reload, notify }) {
   return [
     h(VstDirsCard, { state, reload, notify }),
     h(PluginWorkbench, { notify }),
     h(ExternalRigsCard, { state, reload, notify }),
+    h(OrchestrationCard, { notify }),
   ]
 }
 

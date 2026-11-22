@@ -79,6 +79,12 @@
 - `score.automation` 里的 `"controller":"expression"` 是 **CC11**，和这里的 `expression` 不是一回事：前者是一条音量表情线，后者是整组手势。
 - 验收：同一段音符加与不加 `velocity_line`，整体 RMS 会按力度曲线变（实测 -23.6 → -26.1 dBFS）；`pitchbend_line` 让主频按弯音量整体偏移（实测 331 → 323 Hz）。
 
+## 先查配器表，再决定用哪个音色
+
+别人做过的曲子用什么音源、什么 preset 是有记录的，别凭印象挑。写曲前先 `anyaudio_sources {action:"orchestrations"}` 看有没有导入过配器表；有就 `{action:"orchestration", name:"<表名>"}` 读它（可加 `"instrument":"Acoustic Piano"` 只看一类乐器）。它按乐器列出「哪个 source / bank / preset、被多少首曲子用过」，第一行往往就是最常见的选择——照着它写，比随机挑一个 GM 音色更像这个风格。
+
+表本身可以从 `.csv`、`.xlsx`（每个工作表一张表）或 Google Sheets 链接导入：`{action:"orchestration_import", name:"…", path:"…"}` 或 `{action:"orchestration_import", name:"…", url:"https://docs.google.com/spreadsheets/d/…"}`，走代理时加 `"proxy":"http://127.0.0.1:7881"`。导入后表存在 `~/.dsh/anyaudio/orchestrations/`，每台机器一份。
+
 ## 乐器选择
 
 - 民族/古风：`guzheng`(古筝)、`guqin`(古琴)、`pipa`(琵琶)、`erhu`(二胡)、`dizi`(笛)、`xiao`(箫)、`sheng`(笙)、`suona`(唢呐)、`bianzhong`(编钟)、`yangqin`(扬琴)、`taiko`(太鼓)。它们映射到最接近的 GM 音色，不是真采样，但比正弦合成有质感。

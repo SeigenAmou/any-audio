@@ -1,9 +1,13 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import { extname, join, resolve } from 'node:path'
 import { FONT_EXTENSIONS, RECOMMENDED_FONTS, findRecommendedByFile, fontSearchDirs, installFont, listFonts, resolveFont } from '../audio/fonts.js'
 import { loadCatalog } from '../audio/banks.js'
 import { addPending, extractManualText, fitManualText, listManuals, listPending, MANUAL_EXTRACT_CHARS, manualsDir, pendingFor, readManual, removeManual, removePending, saveManual } from '../audio/manuals.js'
 import { DRUM_MAP, INSTRUMENTS } from '../audio/score.js'
+import { importOrchestrationSource, listOrchestrations, orchestrationDir, readOrchestration, removeOrchestration, summarizeOrchestration } from '../audio/orchestration.js'
 import { CATEGORY_LABELS, scoreTable } from '../audio/scoring.js'
 import { listSourceKinds } from '../audio/sources.js'
 import { loadSoundBank, listPresets } from '../audio/synth.js'
@@ -66,7 +70,7 @@ export const sourcesToolDefinition = finalizeTool({
   parameters: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_import', 'manual_remove', 'manuals_pending', 'manual_parse'], description: 'What to do; defaults to "list". "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_import" registers a manual by path (it is extracted later, when the source is about to be used; add "parse": true to extract right now), "manuals_pending" lists the registered-but-not-yet-read manuals, "manual_parse" extracts one of those now, "manual_remove" deletes one.' },
+      action: { type: 'string', enum: ['list', 'install', 'instruments', 'presets', 'use', 'kinds', 'manuals', 'manual', 'manual_set', 'manual_import', 'manual_remove', 'manuals_pending', 'manual_parse', 'orchestrations', 'orchestration', 'orchestration_import', 'orchestration_remove'], description: 'What to do; defaults to "list". "orchestrations" lists orchestration tables (which instrument came from which sound source, learned from real pieces), "orchestration" reads one and summarises it per instrument, "orchestration_import" imports a .csv/.xlsx or a Google Sheets URL, "orchestration_remove" deletes one. "manuals" lists note sheets written about a sound source, "manual" reads one, "manual_set" writes or replaces one, "manual_import" registers a manual by path (it is extracted later, when the source is about to be used; add "parse": true to extract right now), "manuals_pending" lists the registered-but-not-yet-read manuals, "manual_parse" extracts one of those now, "manual_remove" deletes one.' },
       id: { type: 'string', description: 'Recommended source/bank id for install, default "generaluser".' },
       url: { type: 'string', description: 'Direct URL of a custom SoundFont to install.' },
       fromPath: { type: 'string', description: 'Local SoundFont path to install (useful when downloads are blocked).' },
@@ -78,6 +82,9 @@ export const sourcesToolDefinition = finalizeTool({
       path: { type: 'string', description: 'With "manual_import": the manual file, or a folder of them, to register.' },
       parse: { type: 'boolean', description: 'With "manual_import": extract the text now instead of only registering the path.' },
       text: { type: 'string', description: 'With "manual_set": the notes themselves (markdown).' },
+      instrument: { type: 'string', description: 'With "orchestration": only rows whose instrument contains this text.' },
+      sheet: { type: 'string', description: 'With "orchestration_import": read only this worksheet of an .xlsx.' },
+      proxy: { type: 'string', description: 'HTTP proxy for downloading a Google Sheets URL, e.g. "http://127.0.0.1:7881".' },
     },
   },
   output: {
@@ -103,6 +110,22 @@ export const sourcesToolDefinition = finalizeTool({
       },
     },
     render: textRenderer((_args, value) => {
+      if (value.action === 'orchestrations') {
+        if (!value.tables?.length) return `No orchestration tables yet. Import one with action "orchestration_import". They are kept in ${value.directory}.`
+        return `Orchestration tables (${value.tables.length}):\n` + value.tables.map((row) =>
+          `- ${row.name ?? row.id} — ${row.rowCount} row(s), ${row.sections} song(s)${row.source?.path ? ` · ${row.source.path}` : ''}`).join('\n')
+      }
+      if (value.action === 'orchestration') {
+        const lines = [`${value.name} — ${value.rows} row(s), ${value.sections} song(s)`]
+        for (const entry of (value.instruments ?? []).slice(0, 12)) {
+          lines.push(`- ${entry.instrument} (${entry.count}x, ${entry.sections} song(s))`)
+          for (const choice of entry.choices.slice(0, 3)) {
+            lines.push(`    ${choice.source} · ${choice.bankPath || '—'} · ${choice.preset || '—'} (${choice.count}x)${choice.notes ? ` — ${choice.notes.slice(0, 60)}` : ''}`)
+          }
+        }
+        if (value.sources?.length) lines.push(`Sources: ${value.sources.slice(0, 6).map((s) => `${s.name} ${s.count}`).join(', ')}`)
+        return lines.join('\n')
+      }
       if (value.action === 'manuals') {
         return [
           value.manuals.length
@@ -174,6 +197,35 @@ export const sourcesToolDefinition = finalizeTool({
   async execute(args, exec) {
     const workspaceRoot = await workspaceRootOf(exec)
     const action = args.action ?? 'list'
+    if (action === 'orchestrations') {
+      return { ok: true, action, tables: listOrchestrations(), directory: orchestrationDir() }
+    }
+    if (action === 'orchestration') {
+      if (!args.name) throw new Error('orchestration needs "name": which table to read (see action "orchestrations")')
+      const table = readOrchestration(args.name)
+      if (!table) throw new Error(`no orchestration table named "${args.name}". Waiting: ...`)
+      const summary = summarizeOrchestration(table, { instrument: args.instrument ?? null })
+      return {
+        ok: true, action, name: table.name, id: table.id, rows: table.rowCount, sheets: table.sheets ?? null,
+        sections: (table.sections ?? []).length, instruments: summary.instruments, sources: summary.sources,
+      }
+    }
+    if (action === 'orchestration_import') {
+      if (!args.name) throw new Error('orchestration_import needs "name": what to call this table')
+      const root = workspaceRootOf(args)
+      const saved = await importOrchestrationSource({
+        name: args.name,
+        path: args.path ? resolve(root, args.path) : null,
+        url: args.url ?? null,
+        proxy: args.proxy ?? null,
+        sheet: args.sheet ?? null,
+      })
+      return { ok: true, action, id: saved.id, path: saved.path, rows: saved.rowCount, sections: saved.sections, sheets: saved.sheets }
+    }
+    if (action === 'orchestration_remove') {
+      if (!args.name) throw new Error('orchestration_remove needs "name"')
+      return { ok: removeOrchestration(args.name), action, name: args.name }
+    }
     if (action === 'manuals') {
       return { ok: true, action, manuals: listManuals(), directory: manualsDir() }
     }

@@ -13,6 +13,7 @@ import { firstPeakOffset, peakPolyphony, shiftChannels } from '../src/audio/hw-t
 import { addPending, listManuals, listPending, manualSlug, pendingFor, readManual, removeManual, removePending, saveManual } from '../src/audio/manuals.js'
 import { peInfo, scanVstLibrary, vst2Kind } from '../src/audio/vst-host.js'
 import { encodeFxp } from '../src/audio/vst-preset.js'
+import { mergeOrchestrationSheets, parseOrchestrationCsv, summarizeOrchestration } from '../src/audio/orchestration.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
 import { registerAllTools } from '../src/tools/index.js'
 import { findFfmpeg, runFfmpeg } from '../src/tools/shared.js'
@@ -2055,6 +2056,30 @@ if (!hadAnyAudioDir) {
   const leftover = await readdir(anyaudioDir).catch(() => [])
   if (leftover.length === 0) await rm(anyaudioDir, { recursive: true, force: true })
 }
+await test('an orchestration table says which source each instrument came from', async () => {
+  const csv = [
+    'Instrument,Source,Path/Bank,Preset,Notes,Demo',
+    '1. Test Song --- A Test',
+    'Acoustic Piano,EDIROL - Super Quartet,Preset Piano,001 St.Concert,layered,',
+    'Acoustic Piano,Steinberg - The Grand 3,02 Model D -> Close,,,',
+    'Drum Kit,Steinberg - LM-4 MarkII,Processed Studio Kits,01 Gator Kit,,',
+    'BPM: 120 -> 128, Time: 3/4,',
+  ].join('\n')
+  const table = parseOrchestrationCsv(csv, { name: 'test', sheet: 'era' })
+  assert(table.sections.length === 1, 'one section')
+  assert(table.sections[0].title.startsWith('1. Test Song'), 'the title line is kept')
+  assert(table.sections[0].rows.length === 3, 'three instrument rows')
+  assert(table.sections[0].sheet === 'era', 'the sheet name travels with the section')
+  assert(table.sections[0].rows[0].program === 1, 'a two-number cell keeps its program')
+  assert(table.sections[0].rows[0].preset === 'St.Concert', 'and its name')
+  assert(table.sections[0].rows[2].program === 1 && table.sections[0].rows[2].bank === null, 'bank may be absent')
+  const merged = mergeOrchestrationSheets({ one: csv, two: csv }, { name: 'both' })
+  assert(merged.sections.length === 2 && merged.sheets.length === 2, 'two sheets merge into two sections')
+  const summary = summarizeOrchestration(table, { instrument: 'piano' })
+  assert(summary.instruments.length === 1, 'the filter keeps only piano')
+  assert(summary.instruments[0].choices.length === 2, 'both piano sources are listed')
+  assert(summary.sources.some(row => row.name.includes('Super Quartet')), 'sources are counted')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
-
