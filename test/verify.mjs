@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { compileScore, parsePitch } from '../src/audio/score.js'
 import { buildTrackMidi, exportProjectMidi } from '../src/audio/midi-export.js'
-import { vst3NoteEvents } from '../src/tools/music.js'
+import { selectSources, vst3NoteEvents } from '../src/tools/music.js'
 import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
 import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
@@ -865,11 +865,12 @@ await test('score tracks carry a source, and a missing or unknown one fails clea
   const unknown = await render({ name: 'g', instrument: 'guitar', source: 'no-such-font', notes: [[0, 0.5, 'E3', 80]] })
   assert(/not installed|unknown sound source/.test(unknown), `expected an actionable source error, got "${unknown}"`)
 
-  // No source is no longer "use the default bank": the caller picks from the
-  // list, and the error has to carry that list so the next call can succeed.
-  const missing = await render({ name: 'g', instrument: 'guitar', notes: [[0, 0.5, 'E3', 80]] })
-  assert(/names no source/.test(missing), `a track without a source must fail, got "${missing}"`)
-  assert(/Available sources:/.test(missing) && missing.includes('generaluser'), `the error must carry the list, got "${missing}"`)
+  // A score written before source was required still plays: it falls back to the
+  // first installed font, and the warning names it so the caller can fix the score.
+  const loose = compileScore({ tracks: [{ name: 'g', instrument: 'guitar', notes: [[0, 0.5, 'E3', 80]] }] })
+  const selected = await selectSources(loose, {})
+  assert(selected.warnings.some((warning) => /no source named/.test(warning)), `a missing source should warn, got ${JSON.stringify(selected.warnings)}`)
+  assert(loose.tracks[0].source === 'generaluser', 'a missing source falls back to the first installed font')
 })
 
 await test('per-track source is reported for every track', async () => {

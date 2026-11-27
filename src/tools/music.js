@@ -257,10 +257,19 @@ export async function selectSources(compiled, { catalog = null, fonts = null, wo
     // Our own plugin and hardware parts name their sound source directly — a
     // plugin path or a MIDI port — so the catalog check does not apply to them.
     if (track.vst || track.hw) continue
-    const source = typeof track.source === 'string' ? track.source.trim() : ''
+    let source = typeof track.source === 'string' ? track.source.trim() : ''
     if (!source) {
-      problems.push(`track "${track.name}" names no source`)
-      continue
+      // A score written before source was required still has to play: fall back
+      // to the first installed font and say which one was used, rather than
+      // refusing a score that worked yesterday.
+      const fallback = fontCatalog.find((font) => font.id === 'generaluser') ?? fontCatalog[0]
+      if (!fallback) {
+        problems.push(`track "${track.name}" names no source and no SoundFont is installed`)
+        continue
+      }
+      source = fallback.id
+      track.source = fallback.id
+      warnings.push(`track "${track.name}": no source named — rendered with "${fallback.id}"`)
     }
     const explicit = vst3ById.get(source)
     if (explicit) {
