@@ -472,6 +472,7 @@ export const musicToolDefinition = finalizeTool({
       output: { type: 'string', description: "Optional extra copy of the rendered WAV at this path. Relative paths resolve against the user's project. The project's own copy is always written under the project folder." },
       font: { type: 'string', description: 'Default SoundFont path or id (.sf2/.sf3/.dls). Used for tracks that resolve to a SoundFont; drum kits always come from it. Defaults to the installed font.' },
       sampleRate: { type: 'number', description: 'Sample rate, default 48000.' },
+      dryRun: { type: 'boolean', description: 'Compile the score and report every track — source, note count, first and last note, program, bank, preset — without rendering a single sample. Use it to check an arrangement before spending the render.' },
       durationSec: { type: 'number', description: 'Exact output length. Defaults to last note end + tailSec.' },
       tailSec: { type: 'number', description: 'Extra seconds after the last note for release and reverb, default 2.' },
       peakDb: { type: 'number', description: 'Normalisation peak in dBFS, default -3. Pass null to keep the raw level.' },
@@ -509,6 +510,32 @@ export const musicToolDefinition = finalizeTool({
       },
     },
     render: textRenderer((args, value) => {
+      if (value.dryRun) {
+        // A dry run is read, not heard: it lists what would be rendered so an
+        // arrangement can be checked before a single sample is produced.
+        const lines = [`Dry run: ${value.title ?? 'score'} — ${value.tracks.length} track(s), ${Number(value.durationSec || 0).toFixed(2)}s of music`]
+        for (const track of value.tracks) {
+          const bits = [`[${track.kind}]`, `${track.notes} notes`]
+          if (track.firstNoteSec !== null) bits.push(`${Number(track.firstNoteSec).toFixed(2)}–${Number(track.lastNoteSec).toFixed(2)}s`)
+          const instrumentText = track.instrument === undefined || track.instrument === null
+            ? null
+            : String(track.instrument)
+          if (instrumentText && !/^program \d+$/.test(instrumentText)) bits.push(`instrument ${instrumentText}`)
+          if (track.program !== undefined && track.program !== null) bits.push(`program ${track.program}`)
+          if (track.bank !== undefined) bits.push(`bank ${track.bank}`)
+          if (track.bankLsb !== undefined) bits.push(`lsb ${track.bankLsb}`)
+          if (track.channel !== undefined) bits.push(`ch ${track.channel}`)
+          if (track.preset) bits.push(`preset ${track.preset}`)
+          if (track.plugin) bits.push(basename(track.plugin))
+          if (track.port) bits.push(`port ${track.port}`)
+          lines.push(`- ${track.name}: ${bits.join(', ')}`)
+        }
+        if (value.tempo?.length) lines.push(`Tempo: ${value.tempo.map((entry) => `bar ${entry.bar} ${entry.bpm} BPM ${entry.meter.num}/${entry.meter.den}`).join('; ')}`)
+        if (value.warnings?.length) lines.push(`Warnings:
+${value.warnings.map((warning) => `- ${warning}`).join('\\n')}`)
+        lines.push('Nothing was rendered: drop dryRun to render it.')
+        return lines.join('\n')
+      }
       const fonts = value.fonts?.length
         ? value.fonts.map((font) => `${font.id}@+${font.offset} (${font.file})`).join(', ')
         : value.font ? basename(value.font) : 'none (plugin parts only)'
@@ -581,6 +608,44 @@ export const musicToolDefinition = finalizeTool({
       }
     }
     const plan = await planFonts(mixed ? sf2Compiled : compiled, { workspaceRoot, fontPath })
+    if (args.dryRun === true) {
+      // A dry run answers "what will this sound like and with what" without
+      // touching an audio device, a plugin or a bank: it is the arrangement
+      // view a person can read before paying for the render.
+      const described = compiled.tracks.map((track) => {
+        const notes = track.notes ?? []
+        const first = notes.length ? Math.min(...notes.map((note) => note.start)) : null
+        const last = notes.length ? Math.max(...notes.map((note) => note.start + note.duration)) : null
+        return {
+          name: track.name,
+          kind: track.vst3 ? 'vst3' : track.vst ? 'vst' : track.hw ? 'hw' : 'font',
+          notes: notes.length,
+          firstNoteSec: first,
+          lastNoteSec: last,
+          instrument: track.vst ? undefined : track.vst3 ? track.source : track.hw ? undefined : track.instrument,
+          program: track.vst3 ? undefined : track.program,
+          bank: track.vst ? track.vst.bank ?? undefined : track.bank,
+          bankLsb: track.vst ? track.vst.bankLsb ?? undefined : undefined,
+          channel: track.channel,
+          preset: track.vst ? track.vst.preset ?? undefined : track.vst3 ? track.preset : undefined,
+          plugin: track.vst ? track.vst.plugin : undefined,
+          port: track.hw ? track.hw.port : undefined,
+          gainDb: track.gainDb,
+          pan: track.pan,
+        }
+      })
+      return {
+        ok: true,
+        dryRun: true,
+        title: compiled.title,
+        durationSec: compiled.durationSec,
+        requestedDurationSec: clampSeconds(args.durationSec, compiled.durationSec + clampSeconds(args.tailSec ?? config.music.tailSec, config.music.tailSec)),
+        tempo: compiled.tempo ?? null,
+        tracks: described,
+        fonts: (plan.banks ?? []).map((bank) => ({ id: bank.id ?? null, path: bank.path ?? null })),
+        warnings: [...(compiled.warnings ?? []), ...(plan.warnings ?? [])],
+      }
+    }
     const peakSetting = args.peakDb === undefined ? config.music.peakDb : args.peakDb
     const peakDb = peakSetting === null ? undefined : Number(peakSetting)
     const normalize = peakSetting !== null
