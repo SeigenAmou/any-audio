@@ -15,6 +15,7 @@ import { renderScore } from '../audio/renderers.js'
 import { renderMixWithParts, renderVstStem, vstTracksOf } from '../audio/vst-track.js'
 import { hwTracksOf, renderHwStem } from '../audio/hw-track.js'
 import { resolveScorePresets } from '../audio/vst-preset.js'
+import { partTarget, rollText } from '../audio/track-view.js'
 import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
@@ -482,6 +483,9 @@ export const musicToolDefinition = finalizeTool({
       font: { type: 'string', description: 'Default SoundFont path or id (.sf2/.sf3/.dls). Used for tracks that resolve to a SoundFont; drum kits always come from it. Defaults to the installed font.' },
       sampleRate: { type: 'number', description: 'Sample rate, default 48000.' },
       dryRun: { type: 'boolean', description: 'Compile the score and report every track — source, note count, first and last note, program, bank, preset — without rendering a single sample. Use it to check an arrangement before spending the render.' },
+      view: { type: 'string', enum: ['tracks', 'roll'], description: 'With dryRun, "roll" draws a plain-text piano roll (sixteen cells per bar) instead of the track table.' },
+      viewBars: { type: 'number', description: 'With view roll: how many bars to draw, default 4.' },
+      viewBpm: { type: 'number', description: 'With view roll: the tempo the bar lines are counted at, default 120.' },
       durationSec: { type: 'number', description: 'Exact output length. Defaults to last note end + tailSec.' },
       tailSec: { type: 'number', description: 'Extra seconds after the last note for release and reverb, default 2.' },
       peakDb: { type: 'number', description: 'Normalisation peak in dBFS, default -3. Pass null to keep the raw level.' },
@@ -523,6 +527,10 @@ export const musicToolDefinition = finalizeTool({
         // A dry run is read, not heard: it lists what would be rendered so an
         // arrangement can be checked before a single sample is produced.
         const lines = [`Dry run: ${value.title ?? 'score'} — ${value.tracks.length} track(s), ${Number(value.durationSec || 0).toFixed(2)}s of music`]
+        if (value.roll) {
+          lines.push(value.roll)
+          lines.push('')
+        }
         for (const track of value.tracks) {
           const bits = [`[${track.kind}]`, `${track.notes} notes`]
           if (track.firstNoteSec !== null) bits.push(`${Number(track.firstNoteSec).toFixed(2)}–${Number(track.lastNoteSec).toFixed(2)}s`)
@@ -541,7 +549,7 @@ export const musicToolDefinition = finalizeTool({
         }
         if (value.tempo?.length) lines.push(`Tempo: ${value.tempo.map((entry) => `bar ${entry.bar} ${entry.bpm} BPM ${entry.meter.num}/${entry.meter.den}`).join('; ')}`)
         if (value.warnings?.length) lines.push(`Warnings:
-${value.warnings.map((warning) => `- ${warning}`).join('\\n')}`)
+${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
         lines.push('Nothing was rendered: drop dryRun to render it.')
         return lines.join('\n')
       }
@@ -641,8 +649,12 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\\n')}`)
           port: track.hw ? track.hw.port : undefined,
           gainDb: track.gainDb,
           pan: track.pan,
+          target: partTarget(track),
         }
       })
+      const roll = args.view === 'roll'
+        ? rollText(compiled, { bars: Number(args.viewBars) || 4, bpm: Number(args.viewBpm) || 120 })
+        : null
       return {
         ok: true,
         dryRun: true,
@@ -653,6 +665,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\\n')}`)
         tracks: described,
         fonts: (plan.banks ?? []).map((bank) => ({ id: bank.id ?? null, path: bank.path ?? null })),
         warnings: [...(compiled.warnings ?? []), ...(plan.warnings ?? [])],
+        ...(roll ? { roll } : {}),
       }
     }
     const peakSetting = args.peakDb === undefined ? config.music.peakDb : args.peakDb

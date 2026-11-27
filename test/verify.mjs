@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { compileScore, parsePitch } from '../src/audio/score.js'
+import { buildTrackList, noteName, rollText } from '../src/audio/track-view.js'
 import { buildTrackMidi, exportProjectMidi } from '../src/audio/midi-export.js'
 import { selectSources, vst3NoteEvents } from '../src/tools/music.js'
 import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
@@ -2369,6 +2370,32 @@ await test('a .mid can be sliced to a bar range a person counts out loud', async
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+await test('a track list says which instrument answers each part', async () => {
+  const compiled = compileScore({
+    tracks: [
+      { name: 'piano', instrument: 'grand-piano', notes: [[0, 1, 60, 80]] },
+      { name: 'bass', vst: { plugin: 'C:/x/SRX PIANO 1(VST2 64bit).dll', channel: 1 }, notes: [[0, 1, 36, 90]] },
+      { name: 'rig', hw: { port: 'SD-20 PART A' }, notes: [[0, 1, 60, 80]] },
+    ],
+  })
+  const list = buildTrackList(compiled, { bpm: 120, meter: [4, 4] })
+  assert(list.length === 3, 'three parts')
+  assert(list[0].kind === 'sf2', 'the first part is a font part')
+  assert(list[1].kind === 'vst' && list[1].target.includes('SRX PIANO 1') && list[1].channel === 1, 'a plugin part names its plugin and channel')
+  assert(list[2].kind === 'hw' && list[2].target.includes('SD-20 PART A'), 'a hardware part names its port')
+  assert(noteName(69) === 'A4' && noteName(60) === 'C4', 'note names read like a person says them')
+})
+
+
+await test('the text roll puts a note where it is played', async () => {
+  const compiled = compileScore({ tracks: [{ name: 'p', instrument: 'grand-piano', notes: [[0, 2, 60, 100]] }] })
+  const roll = rollText(compiled, { bars: 1, bpm: 120 })
+  const rows = roll.split('\n').filter((line) => line.includes('|'))
+  assert(rows.length === 1, 'one bar is drawn')
+  assert(rows[0].includes('#'), 'the downbeat holds a note')
+  assert(rows[0].split('|')[1].length === 16, 'sixteen cells per bar')
 })
 
 await test('a tempo map decides where the bar lines fall, not where the notes sound', async () => {
