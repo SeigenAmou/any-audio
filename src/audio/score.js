@@ -3,6 +3,7 @@
  * friendly) into sample-accurate MIDI events for the SoundFont renderer.
  */
 import { applyExpression } from './expression.js'
+import { buildTempoMap } from './tempo.js'
 
 import { builtInCatalog } from './vst3-catalog.js'
 
@@ -664,6 +665,19 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     ? applyExpression(tracks, score.expression, { warn })
     : []
 
+  // A tempo map decides where bar lines fall, not what the notes sound like:
+  // a score keeps its note times in seconds, so changing the tempo at bar 9
+  // never moves audio that was already rendered. buildTempoMap throws a plain
+  // Error; a bad score should surface as a ScoreError like every other refusal.
+  let tempo = []
+  if (score.tempo !== undefined && score.tempo !== null) {
+    try {
+      tempo = buildTempoMap(score.tempo)
+    } catch (error) {
+      throw new ScoreError(error.message)
+    }
+  }
+
   const endSec = tracks.reduce((max, track) => Math.max(max, track.endSec), 0)
   const declared = Number(score.durationSec)
   const durationSec = Number.isFinite(declared) && declared > 0 ? Math.max(declared, endSec) : endSec
@@ -680,6 +694,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       delay: Number.isFinite(Number(score.effects?.delay)) ? Number(score.effects.delay) : 0,
     },
     ...(expressionReports.length ? { expression: expressionReports } : {}),
+    ...(tempo.length ? { tempo } : {}),
     warnings,
   }
 }

@@ -2370,5 +2370,30 @@ await test('a .mid can be sliced to a bar range a person counts out loud', async
   }
 })
 
+await test('a tempo map decides where the bar lines fall, not where the notes sound', async () => {
+  const { buildTempoMap, barSeconds, secondsToTicks, ticksToSeconds } = await import('../src/audio/tempo.js')
+  const { compileScore } = await import('../src/audio/score.js')
+  const { encodeMidiFile, parseMidiFile } = await import('../src/audio/midi-file.js')
+  // r is the number of whole notes in a bar, not the numerator: 3/4 is 0.75.
+  const waltz = buildTempoMap([{ bar: 1, bpm: 90, meter: [3, 4] }])
+  assert(Math.abs(barSeconds(waltz[0].bpm, waltz[0].meter) - 2) < 1e-9, '3/4 at 90 bpm is one bar every 2s')
+  const odd = buildTempoMap([{ bar: 1, bpm: 120, meter: '5/4' }])
+  assert(Math.abs(barSeconds(odd[0].bpm, odd[0].meter) - 2.5) < 1e-9, '5/4 at 120 bpm is 2.5s a bar')
+  const eight = buildTempoMap([{ bar: 1, bpm: 120, meter: [7, 8] }])
+  assert(Math.abs(barSeconds(eight[0].bpm, eight[0].meter) - 1.75) < 1e-9, '7/8 at 120 bpm is 1.75s a bar')
+  const map = buildTempoMap([{ bar: 1, bpm: 120, meter: [4, 4] }, { bar: 3, bpm: 90 }])
+  assert(map[1].startSec === 4, 'two 2s bars put bar 3 at 4s')
+  assert(secondsToTicks(map, 4, 480) === 3840, '4s is 8 quarter notes at 120 bpm')
+  assert(secondsToTicks(map, 6, 480) === 5280, 'after 4s the tempo is 90, so 2s is 3 more quarters')
+  assert(Math.abs(ticksToSeconds(map, 3840, 480) - 4) < 1e-9, 'ticks round-trip back to seconds')
+  const compiled = compileScore({ title: 'tempo', tempo: [{ bar: 1, bpm: 120, meter: [4, 4] }, { bar: 3, bpm: 90 }], tracks: [{ name: 'a', instrument: 'grand-piano', notes: [[0, 1, 60, 80], [4, 1, 64, 80]] }] })
+  assert(compiled.tempo.length === 2, 'the compiled score carries the map')
+  const back = parseMidiFile(encodeMidiFile(compiled, { title: 'tempo' }))
+  assert(JSON.stringify(back.tempos.map((t) => t.tick)) === '[0,3840]', 'both tempo changes land on their tick')
+  assert(back.tempos[0].usPerQuarter === 500000 && back.tempos[1].usPerQuarter === 666667, 'the microseconds per quarter follow the bpm')
+  const notes = back.tracks.slice(1).flatMap((track) => track.notes ?? [])
+  assert(notes.length === 2 && notes[0].start === 0 && notes[1].start === 4, 'the second note still starts at 4s')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

@@ -16,6 +16,7 @@
  */
 
 import { INSTRUMENTS } from './score.js'
+import { secondsToTicks } from './tempo.js'
 
 const DEFAULT_PPQ = 480
 const DEFAULT_BPM = 120
@@ -115,22 +116,44 @@ export function encodeMidiFile(compiled, { bpm = DEFAULT_BPM, ppq = DEFAULT_PPQ,
   const tempoBpm = Math.max(20, Math.min(400, Number(bpm) || DEFAULT_BPM))
   const ticksPerQuarter = Math.max(24, Math.min(960, Math.round(Number(ppq) || DEFAULT_PPQ)))
   const ticksPerSecond = (ticksPerQuarter * tempoBpm) / 60
-  const tickOf = (seconds) => {
-    const value = Number(seconds)
-    return Number.isFinite(value) && value > 0 ? Math.round(value * ticksPerSecond) : 0
-  }
+  // A score may carry a tempo map (bar 1 at 120, bar 9 at 140, ...). With one
+  // the tick scale changes at every tempo change, so seconds cannot be turned
+  // into ticks by a single multiply; without one nothing here changes.
+  const tempoMap = Array.isArray(compiled.tempo) && compiled.tempo.length > 1 ? compiled.tempo : null
+  const tickOf = tempoMap
+    ? (seconds) => {
+      const value = Number(seconds)
+      return Number.isFinite(value) && value > 0 ? secondsToTicks(tempoMap, value, ticksPerQuarter) : 0
+    }
+    : (seconds) => {
+      const value = Number(seconds)
+      return Number.isFinite(value) && value > 0 ? Math.round(value * ticksPerSecond) : 0
+    }
   const usPerQuarter = Math.round(60000000 / tempoBpm)
   // Every event in a track starts with a delta, including the first. A writer
   // may leave out the delta of the very first event, but never of a later one:
   // the 0xFF of a meta event that follows another event would then be read as a
   // delta byte (0xFF is "continue", so the reader swallows the meta type too and
   // every following event shifts by thousands of ticks).
-  const conductor = [
-    0x00, ...textMeta(0x03, title ?? compiled.title ?? 'any-audio'),
-    0x00, META, 0x51, 0x03, (usPerQuarter >> 16) & 0xff, (usPerQuarter >> 8) & 0xff, usPerQuarter & 0xff,
-    0x00, META, 0x58, 0x04, 4, 2, 24, 8,
-    0x00, META, 0x2f, 0x00,
-  ]
+  // A constant tempo writes one tempo and one 4/4 signature. A map writes a
+  // tempo + signature pair at every change, so a reader that honours them lands
+  // the bars where the score said the bars are (1-based, see tempo.js).
+  const marks = tempoMap ?? [{ bar: 1, bpm: tempoBpm, meter: { num: 4, den: 4, r: 1 }, startSec: 0 }]
+  const conductorRows = [{ tick: 0, order: 0, bytes: textMeta(0x03, title ?? compiled.title ?? 'any-audio') }]
+  for (const mark of marks) {
+    const at = tempoMap ? secondsToTicks(tempoMap, mark.startSec, ticksPerQuarter) : 0
+    const us = Math.round(60000000 / mark.bpm)
+    conductorRows.push({ tick: at, order: 1, bytes: [META, 0x51, 0x03, (us >> 16) & 0xff, (us >> 8) & 0xff, us & 0xff] })
+    conductorRows.push({ tick: at, order: 2, bytes: [META, 0x58, 0x04, mark.meter.num, Math.round(Math.log2(mark.meter.den)), 24, 8] })
+  }
+  conductorRows.sort((a, b) => (a.tick - b.tick) || (a.order - b.order))
+  const conductor = []
+  let conductorTick = 0
+  for (const row of conductorRows) {
+    conductor.push(...variableLength(Math.max(0, row.tick - conductorTick)), ...row.bytes)
+    conductorTick = row.tick
+  }
+  conductor.push(0x00, META, 0x2f, 0x00)
 
   const groups = format === 0
     ? [{ name: title ?? compiled.title ?? 'score', tracks: compiled.tracks }]
