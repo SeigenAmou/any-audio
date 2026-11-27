@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 /**
  * One config file per machine, shared by every DSH profile. DSH's own settings
@@ -52,6 +52,16 @@ export const DEFAULTS = {
     peakDb: -3,
     sampleRate: 48000,
     tailSec: 2,
+  },
+  vst3: {
+    // Plugins the person added through the settings page. `path` is the unique
+    // key; the built-in catalog is separate and always available.
+    plugins: [],
+    // 从列表里移除的内置插件路径：文件不动，只是不再出现在音源页。
+    hidden: [],
+    // 厂商预设扫描结果，按插件路径分组：[{ path, timbres: [{ id, name, category, type, statePath }] }]。
+    // 由 audio/vst3-presets.js 写入；数组整体替换，重复扫描不会累积。
+    timbres: [],
   },
   sfx: {
     sampleRate: 48000,
@@ -257,6 +267,63 @@ export function normalizeConfig(input) {
     tailSec: clampNumber(musicRaw.tailSec, 0, 60, DEFAULTS.music.tailSec),
   }
 
+  // Scanned VST3 plugins. `path` is the identity: a duplicate path is dropped
+  // rather than stored twice, and a missing name falls back to the folder name
+  // so the settings page never shows a blank row.
+  const vst3Raw = isPlainObject(raw.vst3) ? raw.vst3 : {}
+  const vst3Plugins = []
+  const seenVst3Paths = new Set()
+  if (Array.isArray(vst3Raw.plugins)) {
+    for (const [index, entry] of vst3Raw.plugins.entries()) {
+      if (!isPlainObject(entry)) {
+        issues.push(`vst3.plugins[${index}] is not an object; it was ignored`)
+        continue
+      }
+      const path = typeof entry.path === 'string' ? entry.path.trim() : ''
+      if (!path) {
+        issues.push(`vst3.plugins[${index}].path must be a non-empty string; it was ignored`)
+        continue
+      }
+      const key = path.toLowerCase()
+      if (seenVst3Paths.has(key)) {
+        issues.push(`vst3.plugins[${index}].path "${path}" is a duplicate; it was ignored`)
+        continue
+      }
+      seenVst3Paths.add(key)
+      const fallbackName = basename(path).replace(/\.vst3$/i, '') || path
+      const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : fallbackName
+      if (typeof entry.name !== 'string' || !entry.name.trim()) {
+        issues.push(`vst3.plugins[${index}].name is empty; using "${name}"`)
+      }
+      const vendor = typeof entry.vendor === 'string' ? entry.vendor.trim() : ''
+      if (entry.vendor !== undefined && typeof entry.vendor !== 'string') {
+        issues.push(`vst3.plugins[${index}].vendor must be a string; using ""`)
+      }
+      vst3Plugins.push({ path, name, vendor })
+    }
+  } else if (vst3Raw.plugins !== undefined) {
+    issues.push('vst3.plugins must be an array; it was ignored')
+  }
+  // 从列表里移除的内置插件：只记路径，文件不动。
+  const vst3Hidden = []
+  const seenHidden = new Set()
+  if (Array.isArray(vst3Raw.hidden)) {
+    for (const [index, entry] of vst3Raw.hidden.entries()) {
+      const path = typeof entry === 'string' ? entry.trim() : ''
+      if (!path) {
+        issues.push(`vst3.hidden[${index}] must be a non-empty string; it was ignored`)
+        continue
+      }
+      const key = path.toLowerCase()
+      if (seenHidden.has(key)) continue
+      seenHidden.add(key)
+      vst3Hidden.push(path)
+    }
+  } else if (vst3Raw.hidden !== undefined) {
+    issues.push('vst3.hidden must be an array; it was ignored')
+  }
+  const vst3Timbres = normalizeVst3Timbres(vst3Raw.timbres, issues)
+
   const sfxRaw = isPlainObject(raw.sfx) ? raw.sfx : {}
   const outputRaw = isPlainObject(raw.output) ? raw.output : {}
   const sourcesRaw = isPlainObject(raw.sources) ? raw.sources : {}
@@ -316,6 +383,7 @@ export function normalizeConfig(input) {
         idleSec: Math.round(clampNumber(singingRaw.idleSec, 0, 3600, DEFAULTS.singing.idleSec)),
       },
       music,
+      vst3: { plugins: vst3Plugins, hidden: vst3Hidden, timbres: vst3Timbres },
       sfx: {
         sampleRate: Math.round(clampNumber(sfxRaw.sampleRate, 8000, 192000, DEFAULTS.sfx.sampleRate)),
         packs: normalizePackPriorities(sfxRaw.packs, issues),
@@ -331,6 +399,62 @@ export function normalizeConfig(input) {
       },
     },
   }
+}
+
+/**
+ * 音色表：按插件路径分组，路径是唯一键。扫描结果由 audio/vst3-presets.js 写入；
+ * 这里只做形状校验，坏条目丢掉而不是让整份配置读不进来。
+ */
+function normalizeVst3Timbres(value, issues) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    issues.push('vst3.timbres must be an array; it was ignored')
+    return []
+  }
+  const out = []
+  const seen = new Set()
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainObject(entry)) {
+      issues.push(`vst3.timbres[${index}] is not an object; it was ignored`)
+      continue
+    }
+    const path = typeof entry.path === 'string' ? entry.path.trim() : ''
+    if (!path) {
+      issues.push(`vst3.timbres[${index}].path must be a non-empty string; it was ignored`)
+      continue
+    }
+    const key = path.toLowerCase()
+    if (seen.has(key)) {
+      issues.push(`vst3.timbres[${index}].path "${path}" is a duplicate; it was ignored`)
+      continue
+    }
+    seen.add(key)
+    const timbres = []
+    for (const item of Array.isArray(entry.timbres) ? entry.timbres : []) {
+      if (!isPlainObject(item)) continue
+      const id = typeof item.id === 'string' ? item.id.trim() : ''
+      const name = typeof item.name === 'string' ? item.name.trim() : ''
+      if (!id || !name) continue
+      const timbre = {
+        id,
+        name,
+        category: typeof item.category === 'string' ? item.category.trim() : '',
+        type: typeof item.type === 'string' ? item.type.trim() : '',
+      }
+      // 参数型音色没有状态文件：它描述一个具名程序参数取值，三个字段必须留住，
+      // 否则 probe 写进来的音色下一次读配置就没了。
+      if (item.kind === 'parameter') {
+        const parameter = typeof item.parameter === 'string' ? item.parameter.trim() : ''
+        const value = typeof item.value === 'string' ? item.value.trim() : ''
+        if (!parameter || !value) continue
+        timbres.push({ ...timbre, kind: 'parameter', parameter, value })
+        continue
+      }
+      timbres.push({ ...timbre, statePath: typeof item.statePath === 'string' ? item.statePath.trim() : '' })
+    }
+    out.push({ path, timbres })
+  }
+  return out
 }
 
 function normalizePercentText(value, fallback) {

@@ -4,6 +4,8 @@
  */
 import { applyExpression } from './expression.js'
 
+import { builtInCatalog } from './vst3-catalog.js'
+
 const NOTE_BASE = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
 const ACCIDENTAL = { '#': 1, s: 1, '♯': 1, b: -1, '♭': -1 }
 
@@ -60,6 +62,15 @@ const AUTOMATION = {
 }
 
 const DEFAULT_VELOCITY = 88
+
+/**
+ * Tool-level strum gestures. A strum is a chord whose notes start in quick
+ * succession, the way a hand crosses the strings — a physical gesture, not a
+ * plugin articulation, so any instrument can play it. `strum-down` runs from the
+ * lowest pitch to the highest, `strum-up` the other way.
+ */
+export const STRUM_ARTS = new Set(['strum-down', 'strum-up'])
+const STRUM_SPREAD_SEC = 0.018
 const BLOCK = 128
 const EVENT_PRIORITY = { bank: 0, banklsb: 0, program: 1, cc: 2, pitch: 2, off: 3, on: 4 }
 
@@ -299,14 +310,16 @@ function collectNotes(track, warn, drums = false) {
     return parsePitch(value)
   }
   track.notes.forEach((entry, index) => {
-    let start, duration, pitch, velocity
+    let start, duration, pitch, velocity, art, expr
     if (Array.isArray(entry)) {
-      ;[start, duration, pitch, velocity] = entry
+      ;[start, duration, pitch, velocity, art] = entry
     } else if (entry && typeof entry === 'object') {
       start = entry.t ?? entry.start ?? entry.time
       duration = entry.d ?? entry.dur ?? entry.duration
       pitch = entry.p ?? entry.pitch ?? entry.n ?? entry.note
       velocity = entry.v ?? entry.velocity
+      art = entry.art ?? entry.articulation
+      expr = entry.expr ?? entry.expression
     } else {
       throw new Error(`track "${track.name}" note #${index} must be an array or object`)
     }
@@ -314,12 +327,43 @@ function collectNotes(track, warn, drums = false) {
     duration = number(duration, `note #${index} duration`)
     if (start < 0) throw new Error(`track "${track.name}" note #${index} starts before 0`)
     if (duration <= 0) throw new Error(`track "${track.name}" note #${index} duration must be > 0`)
+    if (art !== undefined && art !== null && art !== '') {
+      if (typeof art !== 'string') throw new Error(`track "${track.name}" note #${index} art must be a string`)
+      art = art.trim() || undefined
+    } else {
+      art = undefined
+    }
+    // The CC11 arrival value for this track: the curve reaches `expr` when the
+    // note ends and holds it until the next mark. One number and no time, so the
+    // Agent writes the phrasing instead of counting seconds.
+    if (expr !== undefined && expr !== null && expr !== '') {
+      const value = number(expr, `note #${index} expr`)
+      if (value < 0 || value > 127) warn(`track "${track.name}" note #${index} expr clamped to 0..127`)
+      expr = Math.max(0, Math.min(127, value))
+    } else {
+      expr = undefined
+    }
     const pitches = Array.isArray(pitch) ? pitch : [pitch]
     if (!pitches.length) throw new Error(`track "${track.name}" note #${index} has no pitch`)
+    const strum = art !== undefined && STRUM_ARTS.has(art)
+    if (strum && pitches.length < 2) {
+      throw new Error(`track "${track.name}" note #${index}: art "${art}" needs a chord (an array of pitches)`)
+    }
+    const ordered = strum
+      ? [...pitches].sort((a, b) => parseOne(a) - parseOne(b))
+      : pitches
+    if (strum && art === 'strum-up') ordered.reverse()
     const vel = velocity === undefined ? DEFAULT_VELOCITY : Math.round(number(velocity, `note #${index} velocity`))
     if (vel < 1 || vel > 127) warn(`track "${track.name}" note #${index} velocity clamped to 1..127`)
-    for (const p of pitches) {
-      notes.push({ start, duration, midi: parseOne(p), velocity: Math.max(1, Math.min(127, vel)) })
+    for (const [position, p] of ordered.entries()) {
+      notes.push({
+        start: start + (strum ? position * STRUM_SPREAD_SEC : 0),
+        duration,
+        midi: parseOne(p),
+        velocity: Math.max(1, Math.min(127, vel)),
+        ...(art ? { art } : {}),
+        ...(expr !== undefined ? { expr } : {}),
+      })
     }
   })
   return notes
@@ -340,6 +384,29 @@ function applyHumanize(notes, humanize, seed) {
       velocity: Math.max(1, Math.min(127, note.velocity + velocityJitter)),
     }
   })
+}
+
+/**
+ * Turn `{ t, value }` points into evenly sampled CC events: a straight line
+ * between two points, one event every 50 ms. Both the automation points and the
+ * note-anchored `expr` marks end up here, so the two routes cannot drift apart.
+ */
+function sampleCurve(points, controller) {
+  const events = []
+  const step = 1 / 20
+  for (let i = 0; i < points.length; i++) {
+    const current = points[i]
+    events.push({ t: current.t, type: 'cc', controller, value: Math.round(current.value) })
+    const next = points[i + 1]
+    if (!next) continue
+    const span = next.t - current.t
+    if (span <= step) continue
+    for (let t = current.t + step; t < next.t - 1e-6; t += step) {
+      const ratio = (t - current.t) / span
+      events.push({ t, type: 'cc', controller, value: Math.round(current.value + (next.value - current.value) * ratio) })
+    }
+  }
+  return events
 }
 
 function automationEvents(automation, warn) {
@@ -374,21 +441,30 @@ function automationEvents(automation, warn) {
     )
   }
   parsed.sort((a, b) => a.t - b.t)
-  const events = []
-  const step = 1 / 20
-  for (let i = 0; i < parsed.length; i++) {
-    const current = parsed[i]
-    events.push({ t: current.t, type: 'cc', controller: cc, value: Math.round(current.value) })
-    const next = parsed[i + 1]
-    if (!next) continue
-    const span = next.t - current.t
-    if (span <= step) continue
-    for (let t = current.t + step; t < next.t - 1e-6; t += step) {
-      const ratio = (t - current.t) / span
-      events.push({ t, type: 'cc', controller: cc, value: Math.round(current.value + (next.value - current.value) * ratio) })
-    }
+  return { trackName, events: sampleCurve(parsed, cc) }
+}
+
+/**
+ * CC11 curve built from the notes' `expr` marks.
+ *
+ * Each mark is an arrival value at that note's end; the value holds until the
+ * next mark. A track with no marks emits nothing at all, which is what keeps a
+ * score without phrasing identical to what it rendered before `expr` existed.
+ * Two marks on the same instant take the weaker one, so two parts landing
+ * together can never add up into a crescendo nobody asked for.
+ */
+function expressionEvents(notes) {
+  const marks = new Map()
+  for (const note of notes) {
+    if (note.expr === undefined) continue
+    const t = note.start + note.duration
+    const previous = marks.get(t)
+    if (previous === undefined || note.expr < previous) marks.set(t, note.expr)
   }
-  return { trackName, events }
+  if (marks.size === 0) return []
+  const points = [{ t: 0, value: 127 }, ...[...marks].map(([t, value]) => ({ t, value }))]
+  points.sort((a, b) => a.t - b.t)
+  return sampleCurve(points, 11)
 }
 
 /**
@@ -397,6 +473,32 @@ function automationEvents(automation, warn) {
  */
 function cc7For(gainDb) {
   return Math.max(1, Math.min(127, Math.round(127 * Math.pow(10, gainDb / 40))))
+}
+
+/**
+ * Reject notes a VST3 instrument cannot sound, and articulation ids it does not
+ * have. The sidecar would render an out-of-range note as silence, so catching it
+ * here names the track and the source instead of shipping an empty stem.
+ */
+export function checkVst3Notes(trackName, entry, notes) {
+  const { low, high } = entry.range
+  const outside = notes.filter((note) => note.midi < low || note.midi > high)
+  if (outside.length > 0) {
+    const first = outside[0]
+    throw new ScoreError(
+      `track "${trackName}" uses VST3 source "${entry.id}" (${entry.name}), whose measured range is MIDI ${low}-${high}; `
+      + `note at ${first.start.toFixed(2)}s (pitch ${first.midi}) is outside it and would be silent. `
+      + 'Move the pitch into range.',
+    )
+  }
+  const artIds = new Set((entry.articulations ?? []).map((item) => item.id))
+  for (const note of notes) {
+    if (note.art && !STRUM_ARTS.has(note.art) && !artIds.has(note.art)) {
+      throw new ScoreError(
+        `track "${trackName}" note at ${note.start.toFixed(2)}s: art "${note.art}" is not one of ${entry.id}'s articulations (${[...artIds].join(', ')})`,
+      )
+    }
+  }
 }
 
 /**
@@ -455,7 +557,28 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     }
 
     const instrument = resolveInstrument(track.instrument ?? track.program ?? (drums ? 'drums' : 'piano'))
+    // Whether the score named a timbre at all: a track that names none falls
+    // back to piano, and the reply should say so instead of pretending the
+    // fallback was a choice.
+    const instrumentExplicit = (track.instrument !== undefined && track.instrument !== null && track.instrument !== '')
+      || Number.isFinite(track.program)
     const source = typeof track.source === 'string' && track.source.trim() ? track.source.trim() : undefined
+    // `preset` is a VST3 timbre: it names one of the presets the source offers.
+    // A SoundFont track picks its timbre with `instrument` instead, so a preset
+    // without a source has nothing to apply to and is a mistake worth naming.
+    const preset = typeof track.preset === 'string' && track.preset.trim() ? track.preset.trim() : undefined
+    if (track.preset !== undefined && track.preset !== null && track.preset !== '' && !preset) {
+      throw new ScoreError(`track "${name}": preset must be a non-empty string (the timbre name anyaudio_sources lists for that source)`)
+    }
+    if (preset && !source) {
+      throw new ScoreError(
+        `track "${name}": preset "${preset}" needs a source — preset only applies to a VST3 source, `
+        + 'so write source as well (anyaudio_sources action "list" gives both).',
+      )
+    }
+    // A source that names a built-in VST3 instrument is not a SoundFont id: the
+    // renderer sends this track to the sidecar instead of the SF2 synth.
+    const vst3 = source ? builtInCatalog().plugins.find((entry) => entry.id === source) ?? null : null
     const gainDb = Number.isFinite(Number(track.gainDb)) ? Number(track.gainDb) : 0
     const pan = Number.isFinite(Number(track.pan)) ? Math.max(-1, Math.min(1, Number(track.pan))) : 0
     const reverb = Number.isFinite(Number(track.reverb)) ? Math.max(0, Math.min(1, Number(track.reverb))) : 0.35
@@ -463,6 +586,10 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
 
     let notes = collectNotes(track, warn, drums)
     notes = applyHumanize(notes, track.humanize, index * 7919 + (Number(track.humanize?.seed) || 0))
+    // A drum track's pitches are GM drum-map keys, not a melodic range, so the
+    // measured range does not apply to it. Whether a drum track may name a VST3
+    // source at all is settled where the source is resolved.
+    if (vst3 && !drums) checkVst3Notes(name, vst3, notes)
 
     const events = []
     const program = drums ? 0 : instrument.program
@@ -481,6 +608,9 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       events.push({ t: 0, type: 'cc', channel, controller: 10, value: Math.round((pan + 1) * 63.5) })
       events.push({ t: 0, type: 'cc', channel, controller: 91, value: Math.round(reverb * 127) })
       if (chorus > 0) events.push({ t: 0, type: 'cc', channel, controller: 93, value: Math.round(chorus * 127) })
+      // The upstream 0.5 slider writes a CC11 curve; it only means something to
+      // the SoundFont half, because a plugin part never sees these events.
+      for (const event of expressionEvents(notes)) events.push({ ...event, channel })
     }
     for (const note of notes) {
       events.push({ t: note.start, type: 'on', channel, note: note.midi, velocity: note.velocity })
@@ -495,8 +625,8 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
 
     const end = notes.reduce((max, note) => Math.max(max, note.start + note.duration), 0)
     return {
-      name, channel, program, bank: instrument.bank, instrument: instrument.label, source,
-      drums, gainDb, pan, reverb, chorus, mixGain, notes, events, endSec: end,
+      name, channel, program, bank: instrument.bank, instrument: instrument.label, instrumentExplicit, source,
+      preset, vst3, drums, gainDb, pan, reverb, chorus, mixGain, notes, events, endSec: end,
       ...(vst ? { vst } : {}),
       ...(hw ? { hw } : {}),
     }
@@ -516,8 +646,15 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
         + 'automation.track takes the track name, not its index or MIDI channel.',
       )
     }
+    // Both routes write the same controller. A track that already carries `expr`
+    // marks and then gets an expression automation curve is pressed twice, and
+    // which value survives depends on event order — say it rather than ship a
+    // curve nobody can predict.
+    if (events[0]?.controller === 11 && target.notes.some((note) => note.expr !== undefined)) {
+      warn(`track "${trackName}": "expr" marks and an "expression" automation curve both drive CC11 — use one of them, since the last event at each moment wins`)
+    }
     for (const event of events) target.events.push({ ...event, channel: target.channel })
-    target.events.sort((a, b) => a.t - b.t)
+    target.events.sort((a, b) => a.t - b.t || EVENT_PRIORITY[a.type] - EVENT_PRIORITY[b.type])
   }
 
   // Expression writes what a player adds on top of the notes — a bend, a

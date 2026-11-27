@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { cp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import {
   FONT_EXTENSIONS,
   RECOMMENDED_FONTS,
@@ -28,8 +28,12 @@ import {
 } from '../audio/singing-install.js'
 import { gpuStatus, installGpuRuntime } from '../audio/singing-gpu.js'
 import { encodeWav, peakOf, rmsOf, toDb } from '../audio/wav.js'
+import { mergedCatalog, timbresFromPrograms } from '../audio/vst3-catalog.js'
+import { runVst3Install, vst3Root, vst3Status } from '../audio/vst3-install.js'
+import { recognizeVst3 } from '../audio/vst3-known.js'
+import { createVst3Process } from '../audio/vst3-process.js'
 import { configPath, readConfig, resetConfig, updateConfig } from '../config.js'
-import { findFfmpeg, resolveOutputPath, runFfmpeg } from '../tools/shared.js'
+import { findFfmpeg, resolveOutputPath, runFfmpeg, scratchPath } from '../tools/shared.js'
 import { probeVstPlugins, scanVstLibrary } from '../audio/vst-host.js'
 import { extractManualText, fitManualText, listManuals, MANUAL_EXTRACT_CHARS, manualsDir, readManual, removeManual, saveManual } from '../audio/manuals.js'
 import { importPreset as importVstPreset, listPresets as listVstPresets, scanPresetFiles } from '../audio/vst-preset.js'
@@ -71,6 +75,140 @@ export function setGpuInstallRunner(fn) {
 let gpuStatusProbe = gpuStatus
 export function setGpuStatusProbe(fn) {
   gpuStatusProbe = typeof fn === 'function' ? fn : gpuStatus
+}
+// Injectable VST3 runtime installer for offline route tests (same pattern as the
+// singing install runner above).
+let vst3InstallRunner = runVst3Install
+export function setVst3InstallRunner(fn) {
+  vst3InstallRunner = typeof fn === 'function' ? fn : runVst3Install
+}
+// Injectable VST3 process factory for offline route tests (same pattern as the
+// singing install runner above). The settings preview reuses one process; the
+// manager's idle exit closes it after 60s with no request.
+let vst3ProcessFactory = (options) => createVst3Process(options)
+let vst3Process = null
+export function setVst3ProcessFactory(fn) {
+  vst3ProcessFactory = typeof fn === 'function' ? fn : (options) => createVst3Process(options)
+  vst3Process = null
+}
+function getVst3Process() {
+  if (!vst3Process) vst3Process = vst3ProcessFactory()
+  return vst3Process
+}
+/** Stop the shared preview process (tests and plugin disposal). */
+export async function shutdownVst3Process() {
+  const current = vst3Process
+  vst3Process = null
+  if (current) await current.shutdown().catch(() => {})
+}
+
+/**
+ * Parse a bundle's moduleinfo.json, or null when there is none.
+ *
+ * The VST3 SDK writes this file with trailing commas (it is JSON5-ish), which
+ * JSON.parse rejects. Dropping a comma that sits right before } or ] is enough
+ * to read the real metadata instead of silently falling back to the folder
+ * name for every Ample plugin.
+ */
+async function readVst3ModuleJson(packagePath) {
+  try {
+    const text = await readFile(join(packagePath, 'Contents', 'Resources', 'moduleinfo.json'), 'utf8')
+    return JSON.parse(text.replace(/,\s*([}\]])/g, '$1'))
+  } catch {
+    return null
+  }
+}
+
+/** Read Name/Vendor from a VST3 package's moduleinfo.json; empty on failure. */
+async function readVst3ModuleInfo(packagePath) {
+  const data = await readVst3ModuleJson(packagePath)
+  if (!data) return { name: '', vendor: '' }
+  const name = typeof data.Name === 'string' ? data.Name.trim() : ''
+  const vendor = typeof data['Factory Info']?.Vendor === 'string' ? data['Factory Info'].Vendor.trim() : ''
+  return { name, vendor }
+}
+
+/**
+ * Does a bundle's moduleinfo.json declare an Instrument class?
+ * `true` / `false` when the metadata was read, `null` when there is none
+ * (single-file plugins have no Contents/Resources/moduleinfo.json).
+ */
+async function readVst3DeclaredInstrument(packagePath) {
+  const data = await readVst3ModuleJson(packagePath)
+  if (!data) return null
+  const classes = Array.isArray(data.Classes) ? data.Classes : []
+  return classes.some((entry) => Array.isArray(entry?.['Sub Categories']) && entry['Sub Categories'].includes('Instrument'))
+}
+
+/**
+ * Recursively find .vst3 plugins in both Windows forms: a directory bundle
+ * (Contents/x86_64-win/<name>.vst3) and a single-file .vst3, which is itself a
+ * loadable DLL. Bundles without the inner DLL are skipped; a single file needs
+ * no inner check. Every candidate says which form it is (`form`) and whether
+ * its metadata declares an Instrument (`declaredInstrument`).
+ */
+export async function scanVst3Packages(root) {
+  const found = []
+  const seen = new Set()
+  async function walk(dir) {
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      const isVst3 = entry.name.toLowerCase().endsWith('.vst3')
+      if (entry.isDirectory()) {
+        if (isVst3) {
+          const key = full.toLowerCase()
+          if (seen.has(key)) continue
+          seen.add(key)
+          let hasInnerDll = false
+          try {
+            const inner = await readdir(join(full, 'Contents', 'x86_64-win'), { withFileTypes: true })
+            hasInnerDll = inner.some((item) => item.isFile() && item.name.toLowerCase().endsWith('.vst3'))
+          } catch {
+            hasInnerDll = false
+          }
+          if (!hasInnerDll) continue
+          const meta = await readVst3ModuleInfo(full)
+          const name = meta.name || entry.name.replace(/\.vst3$/i, '')
+          found.push({
+            path: full,
+            name,
+            vendor: meta.vendor,
+            hasInnerDll: true,
+            form: 'bundle',
+            declaredInstrument: await readVst3DeclaredInstrument(full),
+            recognized: recognizeVst3(name),
+          })
+          continue
+        }
+        await walk(full)
+        continue
+      }
+      if (!entry.isFile() || !isVst3) continue
+      const key = full.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      // A single-file .vst3 is the DLL itself: no moduleinfo to read, no inner
+      // DLL to check. The file name is the only name available.
+      const name = entry.name.replace(/\.vst3$/i, '')
+      found.push({
+        path: full,
+        name,
+        vendor: '',
+        hasInnerDll: false,
+        form: 'single',
+        declaredInstrument: null,
+        recognized: recognizeVst3(name),
+      })
+    }
+  }
+  await walk(root)
+  return found
 }
 
 function publicJob(job) {
@@ -163,6 +301,7 @@ async function fontState(workspaceRoot) {
       archiveBytes: preset.archiveBytes ?? null,
       manual: preset.manual ?? null,
       url: preset.url ?? null,
+      links: preset.links ?? [],
       license: preset.license,
       note: preset.note,
       tagline: preset.tagline ?? '',
@@ -585,6 +724,212 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
     })
   }
 
+  const VST3_SCAN_DIR = 'C:\\Program Files\\Common Files\\VST3'
+
+  /** VST3 render-runtime status: is the runtime installed, and can it import the deps. */
+  async function vst3StatusRoute() {
+    try {
+      return { ok: true, ...(await vst3Status()) }
+    } catch (error) {
+      return { ok: false, error: describeError(error) }
+    }
+  }
+
+  /** Start (or join) a VST3 render-runtime install job. */
+  async function vst3InstallRoute() {
+    // One install at a time: a second request joins the running job so two
+    // downloads never race on the same `.part` file (same as singingInstallRoute).
+    const running = runningJob('vst3-install')
+    if (running) return { ok: true, job: publicJob(running), reused: true }
+    const job = startJob('vst3-install', async (current) => {
+      current.message = 'preparing'
+      const result = await vst3InstallRunner({
+        signal: current.abort.signal,
+        onProgress: (event) => {
+          if (event.received !== undefined) {
+            current.received = event.received
+            current.total = event.total ?? 0
+          }
+          if (event.message) current.message = event.message
+          else if (event.phase) current.message = event.phase
+        },
+      })
+      current.message = 'ready'
+      return result
+    }, 'VST3 runtime')
+    return { ok: true, job: publicJob(job), reused: false, root: vst3Root() }
+  }
+
+  async function vst3ScanRoute(body) {
+    const requested = typeof body.dir === 'string' && body.dir.trim() ? body.dir.trim() : VST3_SCAN_DIR
+    let info
+    try {
+      info = await stat(requested)
+    } catch {
+      throw new Error(`VST3 目录不存在：${requested}`)
+    }
+    if (!info.isDirectory()) throw new Error(`不是目录：${requested}`)
+    const plugins = await scanVst3Packages(requested)
+    return { ok: true, dir: requested, plugins }
+  }
+
+  /**
+   * Ask the sidecar which named program parameters the plugin exposes and turn
+   * them into parameter-type timbres. Any failure — not an instrument, no
+   * pedalboard, plugin crash — means "no parameter presets": adding a plugin
+   * must not fail because it cannot be probed.
+   */
+  async function probeParameterTimbres(path) {
+    try {
+      const manager = getVst3Process()
+      if (typeof manager.probe !== 'function') return []
+      const { programs } = await manager.probe(path)
+      return timbresFromPrograms(programs)
+    } catch {
+      return []
+    }
+  }
+
+  /** Store parameter timbres next to whatever vendor presets the path already has. */
+  function mergeTimbres(stored, path, timbres) {
+    const key = path.toLowerCase()
+    const index = stored.findIndex((entry) => String(entry.path ?? '').toLowerCase() === key)
+    if (index < 0) return [...stored, { path, timbres }]
+    const existing = stored[index].timbres ?? []
+    const seen = new Set(existing.map((item) => item.id))
+    const merged = [...existing, ...timbres.filter((item) => !seen.has(item.id))]
+    return stored.map((entry, at) => (at === index ? { path: stored[index].path, timbres: merged } : entry))
+  }
+
+  async function vst3AddRoute(body) {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (!path) throw new Error('path is required')
+    if (!existsSync(path)) throw new Error(`VST3 插件不存在：${path}`)
+    const { config } = await readConfig()
+    const existing = (config.vst3?.plugins ?? []).find((entry) => entry.path.toLowerCase() === path.toLowerCase())
+    if (existing) throw new Error(`VST3 插件已存在：${path}`)
+    const meta = await readVst3ModuleInfo(path)
+    const name = typeof body.name === 'string' && body.name.trim()
+      ? body.name.trim()
+      : (meta.name || basename(path).replace(/\.vst3$/i, '') || path)
+    const vendor = typeof body.vendor === 'string' && body.vendor.trim()
+      ? body.vendor.trim()
+      : meta.vendor
+    const plugins = [...(config.vst3?.plugins ?? []), { path, name, vendor }]
+    // Adding a plugin that was removed from the list brings it back.
+    const hidden = (config.vst3?.hidden ?? []).filter((entry) => entry.toLowerCase() !== path.toLowerCase())
+    const updated = await updateConfig({ vst3: { plugins, hidden } })
+    // A plugin that exposes a named program parameter gets parameter-type
+    // timbres, so a score can switch its sound by preset name.
+    const timbres = await probeParameterTimbres(path)
+    if (timbres.length === 0) return { ok: true, plugin: { path, name, vendor }, config: updated.config }
+    const stored = updated.config.vst3?.timbres ?? []
+    const final = await updateConfig({ vst3: { timbres: mergeTimbres(stored, path, timbres) } })
+    return { ok: true, plugin: { path, name, vendor }, timbres, config: final.config }
+  }
+
+  async function vst3RemoveRoute(body) {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (!path) throw new Error('path is required')
+    const { config } = await readConfig()
+    const plugins = config.vst3?.plugins ?? []
+    const next = plugins.filter((entry) => entry.path.toLowerCase() !== path.toLowerCase())
+    if (next.length !== plugins.length) {
+      // Scanned entry: drop it from the config, the plugin file stays.
+      const updated = await updateConfig({ vst3: { plugins: next } })
+      return { ok: true, removed: true, config: updated.config }
+    }
+    // Built-in entry: remember the path as hidden so the page stops listing it.
+    const hidden = config.vst3?.hidden ?? []
+    if (hidden.some((entry) => entry.toLowerCase() === path.toLowerCase())) {
+      return { ok: false, error: `VST3 插件不在列表里：${path}` }
+    }
+    const updated = await updateConfig({ vst3: { hidden: [...hidden, path] } })
+    return { ok: true, removed: true, config: updated.config }
+  }
+
+  /** Built-in + scanned VST3 instrument catalog for the settings page. */
+  async function vst3ListRoute() {
+    const catalog = await mergedCatalog()
+    // The catalog entry exists whether or not the plugin is on this machine;
+    // `installed` is what lets the page tell "recommended" from "already here".
+    return {
+      ok: true,
+      ...catalog,
+      plugins: catalog.plugins.map((entry) => ({ ...entry, installed: existsSync(entry.plugin) })),
+    }
+  }
+
+  /**
+   * Render a short note with one VST3 instrument and return it as a preview
+   * clip, the same shape /sources/preview returns. The settings page plays it
+   * through the existing /audio route.
+   */
+  async function vst3TestRoute(body) {
+    const catalog = await mergedCatalog()
+    const requested = typeof body.plugin === 'string' ? body.plugin.trim() : ''
+    const entry = requested
+      ? catalog.plugins.find((item) => item.id === requested)
+        ?? catalog.plugins.find((item) => item.name === requested)
+        ?? catalog.plugins.find((item) => basename(item.plugin).toLowerCase() === requested.toLowerCase())
+        ?? null
+      : catalog.plugins[0]
+    const pluginPath = entry?.plugin ?? requested
+    if (!pluginPath) throw new Error('vst3/test needs a plugin id or path')
+    if (!existsSync(pluginPath)) throw new Error(`音源插件不存在：${pluginPath}`)
+    // The preview follows the instrument family: a guitar gets a downstroke
+    // across the open D/G/A shapes, everything else keeps the arpeggio. The
+    // arpeggio root sits 4 semitones above the measured low end and 12 below the
+    // high end so the octave jump stays in range; an unmeasured plugin gets MIDI
+    // 55, a safe centre.
+    let notes
+    let duration
+    if (entry?.families?.guitar) {
+      const chords = [
+        { start: 0.0, pitches: [50, 57, 62, 66, 69], dur: 0.9, vel: 100 },
+        { start: 1.0, pitches: [50, 57, 62, 66, 69], dur: 0.9, vel: 100 },
+        { start: 2.0, pitches: [55, 59, 62, 67, 71], dur: 0.9, vel: 100 },
+        { start: 3.0, pitches: [45, 52, 57, 61, 64], dur: 1.4, vel: 110 },
+      ]
+      notes = chords.flatMap((chord) => chord.pitches.map((pitch, index) => ({
+        pitch,
+        start: chord.start + index * 0.018,
+        dur: chord.dur,
+        vel: chord.vel,
+      })))
+      duration = 5.2
+    } else {
+      const range = entry?.range
+      const root = range
+        ? Math.min(Math.max(55, range.low + 4), range.high - 12)
+        : 55
+      const intervals = [0, 4, 7, 12, 7, 4, 0, 7]
+      notes = intervals.map((interval, index) => ({
+        pitch: root + interval,
+        start: index * 0.25,
+        dur: 0.22,
+        vel: index === intervals.length - 1 ? 110 : 100,
+      }))
+      duration = 2.8
+    }
+    const out = scratchPath(workspaceRoot, `vst3-preview-${randomUUID()}.wav`)
+    await mkdir(dirname(out), { recursive: true })
+    let result
+    let buffer
+    try {
+      result = await getVst3Process().render({ plugin: pluginPath, notes, duration, out })
+      buffer = await readFile(out)
+    } finally {
+      await rm(out, { force: true })
+    }
+    return rememberAudio(buffer, {
+      kind: 'vst3',
+      label: `${entry?.name ?? basename(pluginPath)} · 试听`,
+      durationSec: result.seconds,
+      peakDb: Number(toDb(result.peak).toFixed(1)),
+    })
+  }
+
   /**
    * Which engine a credential request is about.
    *
@@ -878,6 +1223,20 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
         return json(res, 500, { ok: false, error: describeError(error) })
       }
     }
+    if (method === 'GET' && path === `${PREFIX}/vst3/status`) {
+      try {
+        return json(res, 200, await vst3StatusRoute())
+      } catch (error) {
+        return json(res, 500, { ok: false, error: describeError(error) })
+      }
+    }
+    if (method === 'GET' && path === `${PREFIX}/vst3/list`) {
+      try {
+        return json(res, 200, await vst3ListRoute())
+      } catch (error) {
+        return json(res, 500, { ok: false, error: describeError(error) })
+      }
+    }
     if (method === 'GET' && path === `${PREFIX}/sfx/packs`) {
       try {
         return json(res, 200, await sfxPacks())
@@ -1018,6 +1377,11 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
       if (path === `${PREFIX}/sources/verify`) return json(res, 200, await verifySource(body))
       if (path === `${PREFIX}/sources/remove`) return json(res, 200, await removeSource(body))
       if (path === `${PREFIX}/sources/preview`) return json(res, 200, await previewSource(body))
+      if (path === `${PREFIX}/vst3/install`) return json(res, 200, await vst3InstallRoute())
+      if (path === `${PREFIX}/vst3/scan`) return json(res, 200, await vst3ScanRoute(body))
+      if (path === `${PREFIX}/vst3/add`) return json(res, 200, await vst3AddRoute(body))
+      if (path === `${PREFIX}/vst3/remove`) return json(res, 200, await vst3RemoveRoute(body))
+      if (path === `${PREFIX}/vst3/test`) return json(res, 200, await vst3TestRoute(body))
       if (path === `${PREFIX}/tts/preview`) return json(res, 200, await previewTts(body))
       if (path === `${PREFIX}/tts/cancel`) {
         const job = jobs.get(String(body.jobId ?? ''))

@@ -407,8 +407,10 @@ export const vstToolDefinition = finalizeTool({
         action,
         available: status.available,
         python: status.python,
-        pedalboard: status.pedalboard ?? null,
-        vst2: status.vst2 ?? null,
+        // The bridge may be unavailable (no python, no pedalboard): omit the
+        // field instead of sending null, which the tool schema does not allow.
+        ...(status.pedalboard ? { pedalboard: String(status.pedalboard) } : {}),
+        ...(status.vst2 ? { vst2: status.vst2 } : {}),
         dirs: library.dirs,
         count: matched.length,
         plugins: matched.slice(0, limit),

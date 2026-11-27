@@ -16,6 +16,12 @@ export const RECOMMENDED_FONTS = [
     name: 'GeneralUser GS',
     file: 'GeneralUser-GS.sf2',
     url: 'https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2',
+    // 下载入口：官方地址与 url 同源；网盘位先留空，等用户把链接做好再填。
+    links: [
+      { label: '官方下载', url: 'https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2' },
+      { label: '百度网盘', url: 'https://pan.baidu.com/s/154U8ED1GIt5bgarkbzrkIg?pwd=6666' },
+      { label: '夸克网盘', url: 'https://pan.quark.cn/s/a92b52c165e3' },
+    ],
     bytes: 32319396,
     sha256: '9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe',
     license: 'GeneralUser GS License v2.0 (free for private/commercial music and for software use; sample provenance partly unverifiable)',
@@ -31,6 +37,11 @@ export const RECOMMENDED_FONTS = [
     name: 'MuseScore General',
     file: 'MuseScore_General.sf3',
     url: 'https://ftp.osuosl.org/pub/musescore/soundfont/MuseScore_General/MuseScore_General.sf3',
+    links: [
+      { label: '官方下载', url: 'https://ftp.osuosl.org/pub/musescore/soundfont/MuseScore_General/MuseScore_General.sf3' },
+      { label: '百度网盘', url: 'https://pan.baidu.com/s/1eMtwrPzCCRuwreYsCL1I9A?pwd=6666' },
+      { label: '夸克网盘', url: 'https://pan.quark.cn/s/5006ee85f96e' },
+    ],
     bytes: 39900972,
     sha256: '5b85b6c2c61d10b2b91cddd41efcce7b25cd31c8271d511c73afafbef20b6fa3',
     license: 'MIT (FluidR3Mono by Michael Cowgill, FluidR3 by Frank Wen, adaptation by S. Christian Collins; keep the copyright notice)',
@@ -64,12 +75,20 @@ export const RECOMMENDED_FONTS = [
     name: 'Electric Guitar Clean (FSBS)',
     file: 'EGuitarFSBS-clean-bridge-20260807.sf2',
     manual: 'https://github.com/freepats/electric-guitar-FSBS-clean/releases/download/2026-08-07/EGuitarFSBS-clean-SF2-20260807.7z',
+    links: [
+      { label: '官方下载', url: 'https://github.com/freepats/electric-guitar-FSBS-clean/releases/download/2026-08-07/EGuitarFSBS-clean-SF2-20260807.7z' },
+      { label: '百度网盘', url: 'https://pan.baidu.com/s/1FQXIjMz0laDWa4Wn4WWfYw?pwd=6666' },
+      { label: '夸克网盘', url: 'https://pan.quark.cn/s/aace8c9a9007' },
+    ],
     bytes: 445922788,
     sha256: 'e66351135ff7c06ca0fee799688e767c917a085988ff29691c02f72c0a4ddabe',
     license: 'CC0 1.0 (FreePats, direct recording of a Fender electric guitar)',
     note: 'Single-instrument electric guitar bank (~446 MB after unpacking the 7z); use it with "source" on guitar tracks only.',
     tagline: '电吉他独奏',
-    scores: { piano: 2, chromatic: 2, organ: 1, guitar: 9, bass: 3, strings: 1, ensemble: 1, brass: 1, reed: 1, pipe: 1, synthLead: 2, synthPad: 2, ethnic: 1, percussive: 2, drums: 1, default: 2 },
+    // Still recognised and still scored, just not offered: the recommendation
+    // list is a shortlist, and this one is a 446 MB manual download.
+    hidden: false,
+    scores: { piano: 2, chromatic: 2, organ: 1, guitar: 6, bass: 3, strings: 1, ensemble: 1, brass: 1, reed: 1, pipe: 1, synthLead: 2, synthPad: 2, ethnic: 1, percussive: 2, drums: 1, default: 2 },
     presetScores: [],
   },
 ]
@@ -80,7 +99,11 @@ export function findRecommended(id) {
 
 export function findRecommendedByFile(fileName) {
   const base = basename(String(fileName ?? '')).toLowerCase()
-  return RECOMMENDED_FONTS.find((font) => font.file.toLowerCase() === base) ?? null
+  // The 7z archives name their payload with spaces where the release page uses
+  // hyphens ("EGuitarFSBS-clean bridge 20260807.sf2"), so a separator-only
+  // difference must still count as the same bank.
+  const normalize = (name) => name.replace(/[\s_-]+/g, '-')
+  return RECOMMENDED_FONTS.find((font) => normalize(font.file.toLowerCase()) === normalize(base)) ?? null
 }
 
 /**

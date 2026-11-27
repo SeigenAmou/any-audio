@@ -384,6 +384,10 @@ export function Guide() {
   }
 
   const fontInstalled = Boolean(fonts?.rows?.length)
+  // 网盘入口：后端把 links 放在推荐数据里；官方入口由「官方下载安装」承担，
+  // 这里只留网盘，url 为空的位（还没做好）不渲染。
+  const fontLinks = (fonts?.available?.find(font => font.id === 'generaluser')?.links ?? [])
+    .filter(link => link.url && link.label !== '官方下载')
   const packInstalled = Boolean(packs?.some((pack) => pack.id === BASE_PACK.id))
   const percent = job && job.total ? Math.round((job.received / job.total) * 100) : 0
   // The note belongs to the step that produced it: a download message from the
@@ -403,7 +407,9 @@ export function Guide() {
 
   if (step === 1) {
     return h(Modal, { title: t('装音源'), step: 2, onClose: finish },
-      h('p', { style: S.desc }, t('乐器声音来自这里。装一套 GeneralUser GS（32 MB）——通用音色，配乐够用。')),
+      h('p', { style: S.desc }, t('乐器声音来自音源。先装一套 GeneralUser GS（32 MB）——通用音色，配乐够用。')),
+      h('p', { style: S.desc }, t('插件支持两种音源：SF2 体积小、安装方便；VST3 音色真实、可调性好，但要装运行时。')),
+      h('p', { style: S.desc }, t('以后想换音源或加装 VST3，到「设置 → AnyAudio → 音源」里操作。')),
       fontInstalled ? h(Notice, null, t('已安装 {0} 个音源', fonts.rows.length)) : null,
       job ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
         h('div', { style: { ...S.row, justifyContent: 'space-between' } },
@@ -413,7 +419,11 @@ export function Guide() {
       ) : null,
       note ? h(Notice, null, note) : null,
       h(Actions, null,
-        fontInstalled || (job && job.status !== 'error') ? null : h(Btn, { kind: 'primary', disabled: busy === 'font', onClick: installFont }, t('下载安装')),
+        fontInstalled || (job && job.status !== 'error') ? null : h(Btn, { kind: 'primary', disabled: busy === 'font', onClick: installFont }, t('官方下载安装')),
+        ...fontLinks.map(link => h(Btn, {
+          key: link.label,
+          onClick: () => window.open(link.url, '_blank', 'noopener,noreferrer'),
+        }, t(link.label))),
         h(Btn, { onClick: () => goTo(2) }, fontInstalled || job ? t('下一步') : t('跳过')),
       ),
     )

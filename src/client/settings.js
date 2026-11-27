@@ -13,6 +13,80 @@ import { BASE_PACK, DownloadLinks, VoicebankDownloadLinks, useVoicebankSources, 
 
 const GITHUB_URL = 'https://github.com/cloudoyx/any-audio'
 
+/** Category badge in front of a source name: VST3 blue, SF2 green. */
+function kindBadge(kind) {
+  const vst3 = kind === 'vst3'
+  return h('span', {
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '0 6px',
+      borderRadius: 4,
+      background: vst3 ? C.accent : C.good,
+      color: '#fff',
+      fontSize: 10,
+      fontWeight: 600,
+      lineHeight: '16px',
+    },
+  }, vst3 ? 'VST3' : 'SF2')
+}
+
+/**
+ * The host's suggestion, not a rule: a plugin whose metadata declares an
+ * Instrument class gets a green「音源」, one that clearly is an effect gets a
+ * grey「效果器」. Anything unreadable shows nothing, and the person still picks.
+ */
+function suggestionBadge(recognized) {
+  if (recognized !== 'instrument' && recognized !== 'effect') return null
+  const instrument = recognized === 'instrument'
+  return h('span', {
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '0 6px',
+      borderRadius: 4,
+      background: instrument ? C.good : C.soft,
+      color: instrument ? '#fff' : C.muted,
+      border: instrument ? 'none' : `1px solid ${C.border}`,
+      fontSize: 10,
+      fontWeight: 600,
+      lineHeight: '16px',
+      whiteSpace: 'nowrap',
+    },
+  }, instrument ? t('音源') : t('效果器'))
+}
+
+/**
+ * 下载入口按钮：官方地址 + 网盘。url 为空的位（网盘链接还没做好）不渲染，
+ * 免得点开一个空白页；label 走 t()，两种界面语言下都是同一个入口。
+ */
+function downloadLinks(links) {
+  return (links ?? []).filter(link => link.url).map(link => h(Btn, {
+    key: link.label,
+    onClick: () => window.open(link.url, '_blank', 'noopener,noreferrer'),
+  }, t(link.label)))
+}
+
+/**
+ * 一个 SF2 的下载入口。后端把 links 放在推荐数据里；还没有这个字段时退回
+ * url / manual，官方入口始终在。
+ */
+function fontLinks(font) {
+  if (Array.isArray(font.links) && font.links.length) return font.links
+  const url = font.url || font.manual
+  return url ? [{ label: '官方下载', url }] : []
+}
+
+/**
+ * What a person needs to know about a built-in instrument, in their words.
+ * The catalog's own notes are written for the agent — measured MIDI numbers,
+ * which notes are silent — and those stay out of the page.
+ */
+const VST3_NOTES = {
+  'ample-bass-p-lite': '低音区音色有限',
+  'ample-guitar-m-lite': '低音 E 弦不发声；效果音需按演奏法触发',
+}
+
 function FontsTab({ state, reload, notify }) {
   const [job, setJob] = useState(null)
   const [busy, setBusy] = useState('')
@@ -21,6 +95,15 @@ function FontsTab({ state, reload, notify }) {
   const [customPath, setCustomPath] = useState('')
   const [openDetails, setOpenDetails] = useState({})
   const [showRecommended, setShowRecommended] = useState(false)
+  const [vst3, setVst3] = useState(null)
+  const [vst3Error, setVst3Error] = useState('')
+  const [vst3Path, setVst3Path] = useState('')
+  const [scanDir, setScanDir] = useState('C:\\Program Files\\Common Files\\VST3')
+  const [scan, setScan] = useState(null)
+  const [scanPicks, setScanPicks] = useState({})
+  const [vst3Preview, setVst3Preview] = useState(null)
+  const [runtime, setRuntime] = useState(null)
+  const [runtimeJob, setRuntimeJob] = useState(null)
   const toggleDetails = (key) => setOpenDetails(current => ({ ...current, [key]: !current[key] }))
 
   // The job lives on the host, not in this component: reopening the settings
@@ -53,6 +136,75 @@ function FontsTab({ state, reload, notify }) {
     }, 700)
     return () => clearInterval(timer)
   }, [job, reload, notify])
+
+  // VST3 entries live in the same list as the SF2 banks: one page, one list,
+  // a badge on each row. The catalog is its own route because it merges the
+  // built-in entries with the plugins the person added.
+  const loadVst3 = useCallback(async () => {
+    try {
+      const data = await api('/vst3/list')
+      setVst3(data)
+      setVst3Error('')
+    } catch (error) {
+      setVst3Error(error.message)
+    }
+  }, [])
+
+  useEffect(() => { loadVst3() }, [loadVst3])
+
+  // The VST3 render runtime is a separate install from the sound sources: the
+  // sidecar needs a Python that can import pedalboard/numpy/mido, and a machine
+  // that only installed the plugin has none. Status has its own route, and the
+  // install is a host job, so reopening settings must pick up a running one.
+  const loadRuntime = useCallback(async () => {
+    try {
+      setRuntime(await api('/vst3/status'))
+    } catch (error) {
+      setRuntime({ ok: false, error: error.message })
+    }
+  }, [])
+
+  useEffect(() => { loadRuntime() }, [loadRuntime])
+
+  useEffect(() => {
+    let cancelled = false
+    api('/jobs/active?kind=vst3-install')
+      .then((data) => { if (!cancelled && data.job) setRuntimeJob(data.job) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!runtimeJob || runtimeJob.status !== 'running') return undefined
+    const timer = setInterval(async () => {
+      try {
+        const data = await api(`/jobs?id=${encodeURIComponent(runtimeJob.id)}`)
+        setRuntimeJob(data.job)
+        if (data.job.status === 'done') {
+          notify(t('VST3 运行时已安装'))
+          await loadRuntime()
+        }
+        if (data.job.status === 'error') notify(jobFailure(data.job), 'error')
+      } catch (error) {
+        notify(error.message, 'error')
+        setRuntimeJob(null)
+      }
+    }, 700)
+    return () => clearInterval(timer)
+  }, [runtimeJob, loadRuntime, notify])
+
+  async function installRuntime() {
+    setBusy('vst3-install')
+    try {
+      const data = await api('/vst3/install', { method: 'POST', body: {} })
+      setRuntimeJob(data.job)
+      notify(data.reused ? t('已有一个下载任务在进行') : t('安装已开始，关掉设置页后仍会继续'))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
 
   async function install(body) {
     setBusy(`install:${body.id || body.fromPath || 'custom'}`)
@@ -92,7 +244,7 @@ function FontsTab({ state, reload, notify }) {
     setBusy(`default:${font.path}`)
     try {
       await api('/config', { method: 'POST', body: { patch: { music: { font: value } } } })
-      notify(t('已设为默认音源'))
+      notify(t('已设为鼓组音源'))
       await reload()
     } catch (error) {
       notify(error.message, 'error')
@@ -112,6 +264,7 @@ function FontsTab({ state, reload, notify }) {
     try {
       const data = await api('/sources/preview', { method: 'POST', body: { path, program } })
       setPreview(data)
+      notify(t('试听已生成'))
     } catch (error) {
       notify(error.message, 'error')
     } finally {
@@ -143,10 +296,91 @@ function FontsTab({ state, reload, notify }) {
     void runPreview(picker.path, program)
   }
 
+  // The host renders a short arpeggio now, so the page only names the plugin.
+  async function testVst3(plugin) {
+    setBusy(`vst3:test:${plugin.id}`)
+    try {
+      const data = await api('/vst3/test', { method: 'POST', body: { plugin: plugin.id } })
+      setVst3Preview({ ...data, pluginId: plugin.id })
+      notify(t('试听已生成'))
+    } catch (error) {
+      notify(t('试听失败：{0}', error.message), 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function addVst3(path, name, vendor) {
+    setBusy(`vst3:add:${path}`)
+    try {
+      await api('/vst3/add', { method: 'POST', body: { path, name, vendor } })
+      notify(t('已添加 VST3 音源'))
+      await loadVst3()
+    } catch (error) {
+      // Adding the same path twice is refused by the host; the reason has to
+      // reach the person instead of the button looking dead.
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function removeVst3(plugin) {
+    setBusy(`vst3:remove:${plugin.plugin}`)
+    try {
+      await api('/vst3/remove', { method: 'POST', body: { path: plugin.plugin } })
+      notify(t('已移除 VST3 音源'))
+      await loadVst3()
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function scanVst3() {
+    setBusy('vst3:scan')
+    try {
+      const data = await api('/vst3/scan', { method: 'POST', body: { dir: scanDir.trim() || undefined } })
+      setScan(data)
+      // Only what the plugin itself declares as an instrument starts checked;
+      // a plugin the host recognises as an instrument counts too. Effect
+      // plugins (Waves, Valhalla, FabFilter …) and single files with no
+      // metadata stay unchecked, and the person decides.
+      setScanPicks(Object.fromEntries((data.plugins ?? []).map(item => [
+        item.path,
+        item.declaredInstrument === true || item.recognized === 'instrument',
+      ])))
+      notify(t('扫描到 {0} 个 VST3 插件', data.plugins.length))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  /** Add every checked scan result in one go; unchecked rows are skipped. */
+  async function addPicked() {
+    const picked = (scan?.plugins ?? []).filter(item => scanPicks[item.path]
+      && !vst3Plugins.some(plugin => plugin.plugin.toLowerCase() === item.path.toLowerCase()))
+    if (picked.length === 0) return
+    setBusy('vst3:add:batch')
+    let added = 0
+    try {
+      for (const item of picked) {
+        await api('/vst3/add', { method: 'POST', body: { path: item.path, name: item.name, vendor: item.vendor } })
+        added++
+      }
+      notify(t('已添加 {0} 个 VST3 音源', added))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+      await loadVst3()
+    }
+  }
+
   const fonts = state.fonts
-  // A single-instrument bank (e.g. Electric Guitar Clean) is published only as
-  // a 7z archive, so there is no URL the installer could fetch: point the
-  // button at the release page instead of offering a download that always fails.
   const libraryDir = fonts.libraryDir || fonts.directories?.[0] || ''
   const percent = job && job.total ? (job.received / job.total) * 100 : 0
   const installing = Boolean(job && job.status === 'running')
@@ -154,11 +388,166 @@ function FontsTab({ state, reload, notify }) {
   // belongs in the list below, and leaving it here only pushes the ones the
   // person can still add further down the page.
   const missingRecommended = fonts.available.filter(font => !fonts.rows.some(row => row.recommendedId === font.id))
-  const allRecommendedInstalled = fonts.available.length > 0 && missingRecommended.length === 0
+  const vst3Plugins = vst3?.plugins ?? []
+  // 推荐位固定五个：三个 SF2（通用 + 两个特色）+ Dexed + Grand Piano，装一个少一个。
+  // 内置档案里带下载链接的才是推荐位：ABPL/AGML 没有链接，只在下面的自定义安装里出现。
+  const recommendedVst3 = vst3Plugins.filter(plugin => plugin.links?.length && !plugin.installed)
+  const allRecommendedInstalled = fonts.available.length > 0 && missingRecommended.length === 0 && recommendedVst3.length === 0
   const recommendedShown = showRecommended ? fonts.available : missingRecommended
+  const recommendedVst3Shown = showRecommended ? vst3Plugins.filter(plugin => plugin.links?.length) : recommendedVst3
+  // 已安装卡只列真的在这台机器上的：catalog 条目装没装由 installed 说了算。
+  const installedVst3 = vst3Plugins.filter(plugin => plugin.installed)
+  const scanPlugins = scan?.plugins ?? []
+  const pickedCount = scanPlugins.filter(item => scanPicks[item.path]
+    && !vst3Plugins.some(plugin => plugin.plugin.toLowerCase() === item.path.toLowerCase())).length
+  const runtimeInstalled = Boolean(runtime?.runtime?.installed)
+  const runtimeReady = Boolean(runtime?.ready)
+  const runtimeInstalling = Boolean(runtimeJob && runtimeJob.status === 'running')
+  const runtimePercent = runtimeJob?.status === 'done'
+    ? 100
+    : runtimeJob && runtimeJob.total ? (runtimeJob.received / runtimeJob.total) * 100 : 0
+  const runtimeDeps = runtime?.deps ?? {}
+
+  function renderFontRow(row) {
+    const recommended = fonts.available.find(font => font.id === row.recommendedId)
+    const label = recommended?.name ?? row.name
+    const open = Boolean(openDetails[row.path])
+    return h('div', { key: `sf2:${row.path}`, style: S.item },
+      h('div', { style: S.itemHead },
+        kindBadge('sf2'),
+        h('span', { style: { fontWeight: 600 } }, label),
+        isDefault(row) ? h('span', { style: S.chip }, t('鼓组音源')) : null,
+        row.status === 'ok' ? null : h('span', { style: S.chip }, row.status === 'modified' ? t('文件被修改') : t('已安装（未登记）')),
+        h('span', { style: { flex: 1 } }),
+        h(Btn, { onClick: () => openPreview(row.path) }, t('试听')),
+        // No button on the row that already is the default: a control that
+        // does nothing is worse than no control.
+        isDefault(row) ? null : h(Btn, { onClick: () => setDefault(row) }, t('设为鼓组音源')),
+        h(Btn, { onClick: () => { if (window.confirm(t('删除 {0} 的文件？\n\n之后需要重新下载才能使用。', label))) act('remove', { path: row.path, removeFile: true }) } }, t('删除')),
+        h(Btn, { onClick: () => toggleDetails(row.path) }, open ? t('收起') : t('详情')),
+      ),
+      open ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+        recommended?.tagline ? h('div', { style: S.desc }, t(recommended.tagline)) : null,
+        h('div', { style: S.mono }, row.path),
+        h('div', { style: S.desc }, bytes(row.bytes)),
+        row.sha256 ? h('div', { style: S.mono }, t('SHA-256：{0}…（{1}）', row.sha256.slice(0, 24), row.status === 'ok' ? t('记录一致') : t('与记录不一致'))) : null,
+        h('div', { style: S.row }, h(Btn, { onClick: () => act('verify', { path: row.path }) }, t('校验'))),
+      ) : null,
+    )
+  }
+
+  /** 详情折叠里的内容：已安装卡和推荐卡说的是同一件事。 */
+  function vst3DetailLines(plugin) {
+    const scanned = plugin.kind === 'scanned'
+    const note = VST3_NOTES[plugin.id] ?? (scanned ? '扫描条目：音域与演奏法未实测。' : '')
+    return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+      h('div', { style: S.desc }, plugin.range ? t('音域：实测 MIDI {0}–{1}', plugin.range.low, plugin.range.high) : t('音域：未实测')),
+      h('div', { style: S.desc }, t('演奏法：{0} 个', plugin.articulations.length)),
+      h('div', { style: S.desc }, t('效果音：{0} 个', plugin.fxSounds.length)),
+      plugin.timbres?.length
+        ? h('div', { style: S.desc }, t('音色：{0} 个 — {1}', plugin.timbres.length, plugin.timbres.slice(0, 16).map(timbre => timbre.name).join(' · ') + (plugin.timbres.length > 16 ? ' …' : '')))
+        : null,
+      note ? h('div', { style: S.desc }, t(note)) : null,
+      scanned ? h('div', { style: S.desc }, t('只能显式指定，不参与自动选源。')) : null,
+      h('div', { style: S.mono }, plugin.plugin),
+    )
+  }
+
+  function renderVst3Row(plugin) {
+    const scanned = plugin.kind === 'scanned'
+    const open = Boolean(openDetails[`vst3:${plugin.id}`])
+    const playing = vst3Preview?.pluginId === plugin.id
+    return h('div', { key: `vst3:${plugin.id}`, style: S.item },
+      h('div', { style: S.itemHead },
+        kindBadge('vst3'),
+        h('span', { style: { fontWeight: 600 } }, plugin.name),
+        suggestionBadge(plugin.recognized),
+        plugin.vendor && plugin.vendor !== '未知' ? h('span', { style: S.chip }, plugin.vendor) : null,
+        scanned ? h('span', { style: S.chip }, t('未实测')) : null,
+        h('span', { style: { flex: 1 } }),
+        // One render at a time: the sidecar serialises them anyway, and a
+        // second click while the first is warming up would just queue.
+        h(Btn, { kind: 'primary', disabled: Boolean(busy), onClick: () => testVst3(plugin) }, busy === `vst3:test:${plugin.id}` ? t('渲染中…') : t('试听')),
+        h(Btn, { disabled: busy === `vst3:remove:${plugin.plugin}`, onClick: () => removeVst3(plugin) }, t('移除')),
+        h(Btn, { onClick: () => toggleDetails(`vst3:${plugin.id}`) }, open ? t('收起') : t('详情')),
+      ),
+      open ? vst3DetailLines(plugin) : null,
+      playing ? h('audio', { controls: true, autoPlay: true, src: vst3Preview.url, style: S.audio }) : null,
+    )
+  }
+
+  /** 推荐位的一行：徽章 + 名称 + 大小 + 状态 + 下载入口 + 详情；装好后不再显示入口。 */
+  function renderRecommendedFont(font) {
+    const installed = fonts.rows.find(row => row.recommendedId === font.id)
+    const key = `rec:${font.id}`
+    const open = Boolean(openDetails[key])
+    return h('div', { key: font.id, style: S.item },
+      h('div', { style: S.itemHead },
+        kindBadge('sf2'),
+        h('span', { style: { fontWeight: 600 } }, font.name),
+        h('span', { style: S.mono }, bytes(font.bytes)),
+        h('span', { style: S.chip }, installed ? t('已安装') : t('未安装')),
+        font.default ? h('span', { style: S.chip }, t('默认')) : null,
+        h('span', { style: { flex: 1 } }),
+        h(Btn, { onClick: () => toggleDetails(key) }, open ? t('收起') : t('详情')),
+      ),
+      h('div', { style: S.row },
+        font.tagline ? h('span', { style: S.desc }, t(font.tagline)) : null,
+        h('span', { style: { flex: 1 } }),
+        installed ? null : downloadLinks(fontLinks(font)),
+      ),
+      open ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+        h('div', { style: S.mono }, t('许可证：{0}', font.license)),
+        font.manual ? h('div', { style: S.mono }, t('手动下载：{0}', font.manual)) : null,
+        font.manual ? h('div', { style: S.mono }, t('安装说明：解压后把 .sf2 放到 {0}，文件名保持 {1}', libraryDir || t('未设置'), font.file)) : null,
+        installed?.sha256 ? h('div', { style: S.mono }, t('SHA-256：{0}…（{1}）', installed.sha256.slice(0, 24), installed.status === 'ok' ? t('记录一致') : t('与记录不一致'))) : null,
+      ) : null,
+    )
+  }
+
+  /** 推荐位的 VST3 一行：厂商代替大小，详情与已安装卡共用。 */
+  function renderRecommendedVst3(plugin) {
+    const key = `rec:${plugin.id}`
+    const open = Boolean(openDetails[key])
+    return h('div', { key: `vst3:${plugin.id}`, style: S.item },
+      h('div', { style: S.itemHead },
+        kindBadge('vst3'),
+        h('span', { style: { fontWeight: 600 } }, plugin.name),
+        plugin.vendor && plugin.vendor !== '未知' ? h('span', { style: S.chip }, plugin.vendor) : null,
+        h('span', { style: S.chip }, plugin.installed ? t('已安装') : t('未安装')),
+        h('span', { style: { flex: 1 } }),
+        h(Btn, { onClick: () => toggleDetails(key) }, open ? t('收起') : t('详情')),
+      ),
+      h('div', { style: S.row },
+        h('span', { style: S.desc }, t('VST3 插件，需要先装运行时。')),
+        h('span', { style: { flex: 1 } }),
+        plugin.installed ? null : downloadLinks(plugin.links),
+      ),
+      open ? vst3DetailLines(plugin) : null,
+    )
+  }
 
   return h(Fragment, null,
+    h(Card, { inline: true, title: t('音源介绍'), desc: t('音源分两类，按需选择，也可以都装。') },
+      h('div', { style: S.grid2 },
+        h('div', { style: S.item },
+          h('div', { style: S.itemHead },
+            kindBadge('sf2'),
+            h('span', { style: { fontWeight: 600 } }, t('SoundFont')),
+          ),
+          h('div', { style: S.desc }, t('体积小、安装方便，一个文件即装即用。')),
+        ),
+        h('div', { style: S.item },
+          h('div', { style: S.itemHead },
+            kindBadge('vst3'),
+            h('span', { style: { fontWeight: 600 } }, t('虚拟乐器插件')),
+          ),
+          h('div', { style: S.desc }, t('音色真实、可调性好，需要先装运行时。')),
+        ),
+      ),
+    ),
     h(Card, {
+      inline: true,
       title: t('推荐音源'),
       desc: t('作者精选。既有通用音源，也有专攻一种乐器的特色音源。'),
       right: h(Btn, { onClick: reload }, t('刷新')),
@@ -176,38 +565,12 @@ function FontsTab({ state, reload, notify }) {
           h(Btn, { onClick: () => setShowRecommended(true) }, t('查看')),
         )
         : h('div', { style: S.list },
-          recommendedShown.map(font => {
-            const installed = fonts.rows.find(row => row.recommendedId === font.id)
-            const key = `rec:${font.id}`
-            const open = Boolean(openDetails[key])
-            return h('div', { key: font.id, style: S.item },
-              h('div', { style: S.itemHead },
-                h('span', { style: { fontWeight: 600 } }, font.name),
-                h('span', { style: S.mono }, bytes(font.bytes)),
-                h('span', { style: S.chip }, installed ? t('已安装') : t('未安装')),
-                font.default ? h('span', { style: S.chip }, t('默认')) : null,
-                h('span', { style: { flex: 1 } }),
-                installed ? null : font.url
-                  ? h(Btn, { kind: 'primary', disabled: installing || busy === `install:${font.id}`, onClick: () => install({ id: font.id }) }, t('下载安装'))
-                  : font.manual
-                    ? h(Btn, { kind: 'primary', onClick: () => window.open(font.manual, '_blank', 'noopener,noreferrer') }, t('下载'))
-                    : null,
-                h(Btn, { onClick: () => toggleDetails(key) }, open ? t('收起') : t('详情')),
-              ),
-              font.tagline ? h('div', { style: S.desc }, t(font.tagline)) : null,
-              open ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-                h('div', { style: S.mono }, t('许可证：{0}', font.license)),
-                font.manual ? h('div', { style: S.mono }, t('手动下载：{0}', font.manual)) : null,
-                font.manual ? h('div', { style: S.mono }, t('安装说明：解压后把 .sf2 放到 {0}，文件名保持 {1}', libraryDir || t('未设置'), font.file)) : null,
-                installed?.sha256 ? h('div', { style: S.mono }, t('SHA-256：{0}…（{1}）', installed.sha256.slice(0, 24), installed.status === 'ok' ? t('记录一致') : t('与记录不一致'))) : null,
-              ) : null,
-            )
-          }),
+          recommendedShown.map(renderRecommendedFont),
+          recommendedVst3Shown.map(renderRecommendedVst3),
         ),
     ),
-    h(Card, { title: t('已安装'), desc: t('这些音源已经在这台机器上，可以直接用。') },
+    h(Card, { inline: true, title: t('已安装'), desc: t('这些音源已经在这台机器上，可以直接用。') },
       preview ? h('div', { style: { ...S.item } },
-        h('div', { style: S.itemHead }, h('span', null, t('试听：{0}', preview.label)), h('span', { style: S.mono }, `${preview.durationSec}s · ${preview.peakDb} dBFS`)),
         picker && picker.presets.length > 1
           ? h('div', { style: S.row },
             h('span', { style: S.label }, t('预设')),
@@ -223,49 +586,143 @@ function FontsTab({ state, reload, notify }) {
           : null,
         h('audio', { controls: true, autoPlay: true, src: preview.url, style: S.audio }),
       ) : null,
-      fonts.rows.length === 0
+      vst3Error ? h(Notice, { tone: 'error' }, t('读取音源档案失败：{0}', vst3Error)) : null,
+      !vst3 && !vst3Error ? h('p', { style: S.desc }, t('正在读取音源档案…')) : null,
+      fonts.rows.length === 0 && installedVst3.length === 0
         ? h('p', { style: S.desc }, t('还没有安装任何音源。从上面的推荐里挑一套，或在下面按文件安装。'))
-        : h('div', { style: S.list }, fonts.rows.map(row => {
-          const recommended = fonts.available.find(font => font.id === row.recommendedId)
-          const label = recommended?.name ?? row.name
-          const open = Boolean(openDetails[row.path])
-          return h('div', { key: row.path, style: S.item },
-            h('div', { style: S.itemHead },
-              h('span', { style: { fontWeight: 600 } }, label),
-              h('span', { style: S.mono }, bytes(row.bytes)),
-              isDefault(row) ? h('span', { style: S.chip }, t('当前默认')) : null,
-              row.status === 'ok' ? null : h('span', { style: S.chip }, row.status === 'modified' ? t('文件被修改') : t('已安装（未登记）')),
-              h('span', { style: { flex: 1 } }),
-              h(Btn, { onClick: () => openPreview(row.path) }, t('试听')),
-              // No button on the row that already is the default: a control that
-              // does nothing is worse than no control.
-              isDefault(row) ? null : h(Btn, { onClick: () => setDefault(row) }, t('设为默认')),
-              h(Btn, { onClick: () => { if (window.confirm(t('删除 {0} 的文件？\n\n之后需要重新下载才能使用。', label))) act('remove', { path: row.path, removeFile: true }) } }, t('删除')),
-              h(Btn, { onClick: () => toggleDetails(row.path) }, open ? t('收起') : t('详情')),
-            ),
-            recommended?.tagline ? h('div', { style: S.desc }, t(recommended.tagline)) : null,
-            open ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              h('div', { style: S.mono }, row.path),
-              row.sha256 ? h('div', { style: S.mono }, t('SHA-256：{0}…（{1}）', row.sha256.slice(0, 24), row.status === 'ok' ? t('记录一致') : t('与记录不一致'))) : null,
-              h('div', { style: S.row }, h(Btn, { onClick: () => act('verify', { path: row.path }) }, t('校验'))),
-            ) : null,
-          )
-        })),
+        : h('div', { style: S.list }, [...fonts.rows.map(renderFontRow), ...installedVst3.map(renderVst3Row)]),
     ),
-    h(Card, { title: t('安装音源'), desc: t('填一个 .sf2 / .sf3 / .dls 文件的路径。7z / zip 请先解压。') },
-      h('div', { style: S.row },
-        h(TextInput, { value: customPath, onChange: setCustomPath, placeholder: t('粘贴文件路径') }),
-        h(Btn, { disabled: !customPath.trim() || installing || busy.startsWith('install:'), onClick: () => install({ fromPath: customPath.trim() }) }, t('安装')),
+    h(Card, { inline: true, title: t('安装自定义音源'), desc: t('装 SF2 或 VST3 音源，按下面的方式操作。') },
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h('span', { style: S.label }, t('① 安装 SF2 音源')),
+        h('div', { style: S.row },
+          h('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            h(TextInput, { value: customPath, onChange: setCustomPath, placeholder: t('粘贴 .sf2 / .sf3 / .dls 文件路径') }),
+          ),
+          h(Btn, { disabled: !customPath.trim() || installing || busy.startsWith('install:'), onClick: () => install({ fromPath: customPath.trim() }) }, t('安装')),
+        ),
+      ),
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h('span', { style: S.label }, t('② 安装 VST3 音源')),
+        h('div', { style: S.row },
+          h('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            h(TextInput, { value: vst3Path, onChange: setVst3Path, placeholder: t('粘贴 .vst3 插件路径') }),
+          ),
+          h(Btn, { disabled: !vst3Path.trim() || busy.startsWith('vst3:add:'), onClick: () => addVst3(vst3Path.trim()) }, t('添加')),
+        ),
+        h('div', { style: S.row },
+          h('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            h(TextInput, { value: scanDir, onChange: setScanDir, placeholder: t('扫描目录') }),
+          ),
+          h(Btn, { disabled: busy === 'vst3:scan', onClick: scanVst3 }, busy === 'vst3:scan' ? t('扫描中…') : t('扫描')),
+        ),
+        scan ? h('div', { style: S.list },
+          h('div', { style: S.row },
+            h('span', { style: S.desc }, t('扫描到 {0} 个插件（{1}）', scan.plugins.length, scan.dir)),
+            h('span', { style: { flex: 1 } }),
+            h(Btn, { kind: 'primary', disabled: pickedCount === 0 || Boolean(busy), onClick: addPicked }, t('添加选中（{0}）', pickedCount)),
+          ),
+          scan.plugins.length === 0 ? h('p', { style: S.desc }, t('这个目录里没有可用的 VST3 插件。')) : null,
+          ...scan.plugins.map(item => {
+            const added = vst3Plugins.some(plugin => plugin.plugin.toLowerCase() === item.path.toLowerCase())
+            const picked = Boolean(scanPicks[item.path])
+            return h('div', { key: item.path, style: S.item },
+              h('div', { style: S.itemHead },
+                h('input', {
+                  type: 'checkbox',
+                  checked: picked,
+                  disabled: added,
+                  onChange: event => setScanPicks(current => ({ ...current, [item.path]: event.target.checked })),
+                }),
+                h('span', { style: { fontWeight: 600 } }, item.name),
+                suggestionBadge(item.recognized),
+                item.vendor ? h('span', { style: S.chip }, item.vendor) : null,
+                h('span', { style: S.desc }, item.form === 'single' ? t('单文件') : t('目录包')),
+                added ? h('span', { style: S.chip }, t('已添加')) : null,
+                h('span', { style: { flex: 1 } }),
+                h(Btn, { disabled: added || !picked || busy === `vst3:add:${item.path}`, onClick: () => addVst3(item.path, item.name, item.vendor) }, t('添加')),
+              ),
+            )
+          }),
+        ) : null,
+      ),
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        h('span', { style: S.label }, t('③ VST3 运行时（VST3 音源渲染需要）')),
+        runtime === null
+          ? h('p', { style: S.desc }, t('正在检测…'))
+          : runtime.ok === false
+            ? h(Notice, { tone: 'error' }, t('状态检测失败：{0}', runtime.error))
+            : h(Fragment, null,
+              h('div', { style: S.row },
+                h('span', { style: S.label }, t('运行时')),
+                h('span', {
+                  style: runtimeInstalled && !runtimeInstalling
+                    ? { ...S.chip, borderColor: C.good, color: C.good }
+                    : S.chip,
+                }, runtimeInstalling ? t('安装中') : runtimeInstalled ? t('已安装') : t('未安装')),
+                runtime.runtime?.version ? h('span', { style: S.mono }, t('版本：{0}', runtime.runtime.version)) : null,
+                h('span', { style: { flex: 1 } }),
+                runtimeReady ? null : h(Btn, {
+                  kind: 'primary',
+                  disabled: runtimeInstalling || busy === 'vst3-install',
+                  onClick: installRuntime,
+                }, t('安装运行时')),
+              ),
+              h('div', { style: S.row },
+                h('span', { style: S.label }, t('依赖')),
+                ...['pedalboard', 'numpy', 'mido'].map(name => h('span', {
+                  key: name,
+                  style: {
+                    ...S.chip,
+                    borderColor: runtimeDeps[name] ? C.good : C.border,
+                    color: runtimeDeps[name] ? C.good : C.muted,
+                  },
+                }, name)),
+              ),
+              runtimeInstalled && !runtimeReady && !runtimeInstalling
+                ? h('div', { style: S.desc }, t('运行时已装好，但依赖不全；点「安装运行时」补齐。'))
+                : null,
+              runtimeJob && runtimeJob.status !== 'error'
+                ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                  h('div', { style: { ...S.row, justifyContent: 'space-between' } },
+                    h('span', { style: S.label }, runtimeJob.status === 'running'
+                      ? `${t('正在安装')}${runtimeJob.total ? ` ${Math.round(runtimePercent)}%` : ''}${runtimeJob.message ? ` · ${runtimeJob.message}` : ''}`
+                      : t('完成：{0}', t('已安装'))),
+                    runtimeJob.total ? h('span', { style: S.mono }, `${bytes(runtimeJob.received)} / ${bytes(runtimeJob.total)}`) : null,
+                  ),
+                  h('div', { style: S.bar }, h('div', { style: S.barFill(runtimePercent) })),
+                )
+                : null,
+              runtimeJob?.status === 'error'
+                ? h(Notice, { tone: 'error' }, t('安装失败：{0}', jobFailure(runtimeJob)))
+                : null,
+            ),
       ),
     ),
-    h(Card, { title: t('音源目录'), desc: t('整台机器共用这一个音源库；环境变量 ANYAUDIO_FONTS 可以追加目录。') },
-      h('div', { style: S.mono }, fonts.directories.join('\n')),
-      // "默认音源" used to show the path a render would land on, which is the
-      // fallback when nothing was chosen. Naming both makes "did I set one?"
-      // answerable from this page (improvement plan 04).
-      h('div', { style: S.desc }, fonts.configured
-        ? t('你选的默认音源：{0}', fonts.configured)
-        : t('默认音源：{0}（自动选择）', fonts.defaultPath || t('未安装音源'))),
+    h(Card, { inline: true, title: t('音源目录'), desc: t('SF2 与 VST3 的存放位置。') },
+      h('div', { style: S.item },
+        h('div', { style: S.itemHead },
+          kindBadge('sf2'),
+          h('span', { style: { fontWeight: 600 } }, t('SF2 音源库')),
+        ),
+        h('div', { style: S.mono }, fonts.directories.join('\n')),
+        h('div', { style: S.desc }, t('整台机器共用这一个音源库；环境变量 ANYAUDIO_FONTS 可以追加目录。')),
+        // "默认音源" used to show the path a render would land on, which is the
+        // fallback when nothing was chosen. Naming both makes "did I set one?"
+        // answerable from this page (improvement plan 04).
+        h('div', { style: S.desc }, fonts.configured
+          ? t('你选的默认音源：{0}', fonts.configured)
+          : t('默认音源：{0}（自动选择）', fonts.defaultPath || t('未安装音源'))),
+      ),
+      h('div', { style: S.item },
+        h('div', { style: S.itemHead },
+          kindBadge('vst3'),
+          h('span', { style: { fontWeight: 600 } }, t('VST3 插件')),
+          h('span', { style: S.chip }, t('已有 {0} 个接入本插件', vst3Plugins.length)),
+        ),
+        h('div', { style: S.desc }, t('无统一目录：插件装在系统 VST3 目录，通过上方扫描或添加登记。')),
+        vst3Plugins.length === 0 ? h('div', { style: S.desc }, t('扫描后勾选并点「添加」即可接入')) : null,
+      ),
     ),
     h('div', { style: S.desc }, t('插件目录、插件预设、外部音源都搬到了「插件与音源」这一页；这一页只剩 SoundFont 音源。')),
   )
@@ -845,15 +1302,18 @@ function PluginWorkbench({ notify }) {
     },
       plugins.length === 0
         ? h('div', { style: S.desc }, t('没有扫到插件。在「VST 目录」里加一条，标准目录也会自动搜索。'))
-        : h('select', {
+        : h(Select, {
           value: chosen,
-          onChange: event => { setChosen(event.target.value); setManual(null) },
+          onChange: (value) => { setChosen(value); setManual(null) },
           style: { width: '100%', padding: '6px 8px', fontFamily: 'inherit', fontSize: 13 },
-        },
-          h('option', { value: '' }, t('选择插件…')),
-          plugins.map(row => h('option', { key: row.path, value: row.path },
-            `${row.name} · ${String(row.format || '').toUpperCase()}${row.category ? ` · ${row.category === 'instrument' ? t('合成器') : t('效果器')}` : ''}${row.vendor ? ` · ${row.vendor}` : ''}`)),
-        ),
+          options: [
+            { value: '', label: t('选择插件…') },
+            ...plugins.map(row => ({
+              value: row.path,
+              label: `${row.name} · ${String(row.format || '').toUpperCase()}${row.category ? ` · ${row.category === 'instrument' ? t('合成器') : t('效果器')}` : ''}${row.vendor ? ` · ${row.vendor}` : ''}`,
+            })),
+          ],
+        }),
       library?.legacy32?.length
         ? h('div', { style: { ...S.desc, marginTop: 6 } }, t('另有 {0} 个 32 位插件，64 位宿主加载不了，需要用桥接。', library.legacy32.length))
         : null,

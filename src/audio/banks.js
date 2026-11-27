@@ -187,6 +187,16 @@ async function resolveSource(value, catalog, workspaceRoot) {
 }
 
 /**
+ * Resolve a score's `source` to an installed font, or throw the same message
+ * planFonts would. Exported so the source check in the music tool reports a bad
+ * SoundFont source in exactly one wording, before any bank is loaded.
+ */
+export async function resolveFontSource(value, { workspaceRoot, catalog } = {}) {
+  const fonts = catalog ?? await loadCatalog()
+  return resolveSource(String(value ?? '').trim(), fonts, workspaceRoot)
+}
+
+/**
  * Decide banks + per-track assignments for a compiled score.
  * Returns { banks, layout, warnings } where `banks` is ready for the renderer
  * and `layout` is keyed by track name.
@@ -295,11 +305,12 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
   }
 
   if (autoPicks.length > 0) {
-    const candidates = catalog.filter((entry) => entry.recommended).length > 0 ? catalog.filter((entry) => entry.recommended) : catalog
+    // 官方推荐字体带实测评分；用户自装的 SF2 没有实测数据，按类先验给兜底分 3。
+    const candidates = catalog
     for (const track of autoPicks) {
       const category = categoryOfProgram(track.program)
       const ranked = rankFonts(
-        candidates.map((entry) => entry.recommended ?? { id: entry.id, name: entry.name, scores: {} }),
+        candidates.map((entry) => entry.recommended ?? { id: entry.id, name: entry.name, scores: { default: 3 } }),
         category,
         track.program,
       )
@@ -328,6 +339,29 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
         warnings.push(`track "${track.name}": auto-picked ${chosen.entry.name} for ${chosen.category} (score ${chosen.score}/10)`)
       }
       layout.set(track.name, { source: chosen.entry.id, fontId: chosen.entry.id, offset: chosen.record.offset, program: chosen.program })
+    }
+  }
+
+  // A bank number the font does not have renders the wrong patch (or silence).
+  // Naming it keeps a typo from passing as a deliberate choice.
+  const presetKeys = new Map()
+  for (const record of banks) {
+    const keys = new Set()
+    for (const preset of melodicPresets(record.bank)) keys.add(`${preset.bankMSB ?? 0}:${preset.program}`)
+    presetKeys.set(record.id, keys)
+  }
+  for (const track of compiled.tracks) {
+    if (track.drums) continue
+    const assignment = layout.get(track.name)
+    if (!assignment) continue
+    const keys = presetKeys.get(assignment.fontId)
+    if (!keys) continue
+    const bank = Number.isFinite(track.bank) ? track.bank : 0
+    if (!keys.has(`${bank}:${assignment.program}`)) {
+      warnings.push(
+        `track "${track.name}": source "${assignment.fontId}" has no program ${assignment.program} in bank ${bank} — `
+        + 'the render will not use the patch you named; check the bank number with anyaudio_sources action "presets"',
+      )
     }
   }
 

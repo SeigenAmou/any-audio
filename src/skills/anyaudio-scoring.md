@@ -21,7 +21,7 @@
 
 **交付物一律是工程，不是一条混音。** 一条压好的混音里，某个音效想挪 0.5 秒、某句旁白想重配，都得整条重跑；工程里改一个片段就行。
 
-第一次使用若报"没有安装音源"，先调 `anyaudio_sources`（action `install`）安装 GeneralUser GS，再渲染。
+第一次使用若报"没有安装音源"，先征得用户同意，再用 `anyaudio_sources`（action `install`）装一套音源，再渲染。
 
 ## Score 格式
 
@@ -31,25 +31,35 @@
 {
   "title": "炊烟",
   "tracks": [
-    { "name": "lead", "instrument": "koto", "gainDb": -2, "pan": 0.1, "reverb": 0.35,
+    { "name": "lead", "source": "generaluser", "instrument": "koto", "gainDb": -2, "pan": 0.1, "reverb": 0.35,
       "notes": [[0, 2.0, "D4", 78], [2, 1.2, "F4", 84], [3.2, 2.4, "A4", 90]] },
-    { "name": "pad", "instrument": "slow-strings", "gainDb": -9,
+    { "name": "pad", "source": "generaluser", "instrument": "slow-strings", "gainDb": -9,
       "notes": [[0, 8, ["D3", "A3"], 60]] },
-    { "name": "bass", "instrument": "cello", "gainDb": -6,
+    { "name": "bass", "source": "generaluser", "instrument": "cello", "gainDb": -6,
       "notes": [[0, 4, "D2", 70], [4, 4, "A1", 66]] }
   ]
 }
 ```
 
+`source` 是 `anyaudio_sources` list 里的音源 id（例子里用默认装的 `generaluser`）；VST3 音源另写 `preset` 选音色，例如 `{ "name": "lead", "source": "<list 里的 VST3 音源 id>", "preset": "<list 里的音色名>", "notes": [...] }`。
+
 规则：
 
-- 音符是 `[起始秒, 时值秒, 音高, 力度]`；第四项力度 1–127，缺省 88。和弦把音高写成数组。也接受对象写法 `{t,d,p,v}`。
+- 音符是 `[起始秒, 时值秒, 音高, 力度, 演奏法]`；力度 1–127，缺省 88；和弦把音高写成数组；第五项可选——写 `strum-down` / `strum-up` 让和弦按 18ms 依次起音（扫弦，任何音源都可用），VST3 音源还可写 `sus` / `pm` / `ls` / `hp`。也接受对象写法 `{t,d,p,v,art,expr}`。
 - 音高可写 MIDI 号（60）或音名（`D3`、`F#4`、`Bb2`、`C5`）。
-- 轨道字段：`instrument`（GM 名或 program 号）、`gainDb`、`pan`（-1–1）、`reverb`/`chorus`（0–1 发送量）、`drums`（该轨用鼓组，音高按鼓件名如 `kick`/`snare` 解析）、`humanize:{timingMs,velocity}`（轻微时间/力度抖动，避免机械感）。
+- 轨道字段：`source`（音源 id，取自 `anyaudio_sources` 的 list）、`instrument`（SF2 音色：GM 名、program 号，或对象 `{program, bank, name}`——bank 不为 0 的预设用对象写法，`presets` 会给出每条音色的准确写法）、`preset`（VST3 音色名，取自 list）、`gainDb`、`pan`（-1–1）、`reverb`/`chorus`（0–1 发送量）、`drums`（该轨用鼓组，音高按鼓件名如 `kick`/`snare` 解析）、`humanize:{timingMs,velocity}`（轻微时间/力度抖动，避免机械感）。
 - **一个 score 最多 16 条轨道**（每条独占一个 MIDI 通道，鼓组固定占通道 9）；超过会直接报错。要更多声部就把同类乐器的音符合并到同一轨（同轨可变音高，和弦写成音高数组）。
 - 谱子很长时不要把它整个内联进工具调用：把 score 写成项目里的 `.json` 文件，`score` 参数直接传这个文件的路径（也接受 JSON 文本），省上下文又不容易漏字段。
 - 自动化：`automation:[{track:"pad", controller:"volume", points:[[0,90],[20,50]]}]`，控制器支持 volume/pan/expression/modulation/sustain/reverb-send/chorus-send/brightness。
+- 表情（CC11）：音符写成对象时可加 `expr`，一个 0–127 的到达值——这个音**结束时**轨道压到该值，保持到下一个标记（两点之间是直线过渡；127=不压，64≈-12dB，0≈静音）。
+  - 0 秒处轨道恒为 127，所以第一个标记之前是一段从 127 滑下来的斜坡。
+  - 一句渐弱：只在句尾那个音写 `expr:60`。
+  - 一句渐强：早段先写一个低值（如 `expr:60`），句尾再写 `127`——只写一个 `127` 是平线，不会渐强。
+  - 先强后弱：中间一个 `127`、句尾一个 `60`。
+  - 同一时刻两个标记取较小的；整首都没写 `expr` 就不发 CC11，和以前完全一样。
+  - CC11 是通道级：同一条轨道同时响的音一起被压，要各自起伏就分轨。
 - 时间从 0 开始、按视频时间轴写；`durationSec` 传视频总长，`tailSec` 留给尾音和混响。
+
 
 ## 演奏表情（让同一个音听起来是人拉的）
 
@@ -85,23 +95,64 @@
 
 表本身可以从 `.csv`、`.xlsx`（每个工作表一张表）或 Google Sheets 链接导入：`{action:"orchestration_import", name:"…", path:"…"}` 或 `{action:"orchestration_import", name:"…", url:"https://docs.google.com/spreadsheets/d/…"}`，走代理时加 `"proxy":"http://127.0.0.1:7881"`。导入后表存在 `~/.dsh/anyaudio/orchestrations/`，每台机器一份。
 
+## 演奏法（音符第五项）
+
+第五项 `art` 有两类，写法一样，来源不同：
+
+**插件演奏法**（只有 VST3 音源有，依赖音源档案）：
+
+- `sus` 长音 / 重音
+- `pm` 手掌闷音
+- `ls` 滑音连奏
+- `hp` 击勾连奏
+
+**扫弦**（工具级，任何音源都能用）：
+
+- `strum-down` 下扫：和弦音从低到高依次起音
+- `strum-up` 上扫：从高到低
+
+扫弦必须写和弦（音高数组），单音写扫弦会报错。扫弦型靠音符的起音时间排布，例如流行歌最常用的「下 空 下上 空 上下上」（八分音符，C 大调 4536251 的第一个和弦 F）：
+
+```json
+[0.00, 1.7, ["F3","A3","C4","F4","A4"], 96, "strum-down"],
+[0.50, 1.7, ["F3","A3","C4","F4","A4"], 82, "strum-down"],
+[0.75, 1.7, ["F3","A3","C4","F4","A4"], 72, "strum-up"],
+[1.25, 1.7, ["F3","A3","C4","F4","A4"], 74, "strum-up"],
+[1.50, 1.7, ["F3","A3","C4","F4","A4"], 90, "strum-down"],
+[1.75, 1.7, ["F3","A3","C4","F4","A4"], 76, "strum-up"]
+```
+
+扫弦要上下交替、有节奏型；只写下扫听起来不像人弹的。
+
+
 ## 乐器选择
 
 - 民族/古风：`guzheng`(古筝)、`guqin`(古琴)、`pipa`(琵琶)、`erhu`(二胡)、`dizi`(笛)、`xiao`(箫)、`sheng`(笙)、`suona`(唢呐)、`bianzhong`(编钟)、`yangqin`(扬琴)、`taiko`(太鼓)。它们映射到最接近的 GM 音色，不是真采样，但比正弦合成有质感。
 - 管弦：`strings`/`slow-strings`、`cello`、`violin`、`viola`、`harp`、`timpani`、`horn`、`trumpet`、`oboe`、`clarinet`、`flute`、`pizzicato`。
 - 氛围：`choir`、`warm-pad`、`choir-pad`、`soundtrack`、`crystal`、`atmosphere`。
-- 不确定就调 `anyaudio_sources`（action `instruments` 或 `presets`）先看有哪些音色。要更特别的音色可以自行装其它 SF2 并传 `font` 参数。
-- 音源可以换：目前支持 `.sf2/.sf3/.dls`，以后会加 sample pack、旁白人声等类型（`action: "kinds"` 可看当前类型）；换音源不用改 score。
+- 上面这些是 GM 别名，SF2 音色用它写 `instrument`；某个音源实际有哪些音色、叫什么，以 `anyaudio_sources` 的 list 为准，不要凭这份名单假设某条音色一定存在。
+- 写谱前先调 `anyaudio_sources`（默认的 `list` 动作）拿清单：**全部已接入音源**（SF2 与 VST3 混排，带评分、实测音域与音色列表），每条音色都写明怎么写进谱里。要看某音源的全部音色再调 `presets`（`source` 传音源 id，SF2 与 VST3 都支持；`query` 可按名字过滤，例如 `query:"12-String"`）；`instruments` 只是 GM 别名表，不是可用音色清单。
+- 需要新音源时先告诉用户去设置页装，或征得用户明确同意后再装——**不得自行下载音源**（下载是大流量动作，必须用户同意）。
+- 换音源或音色要改谱里的 `source`/`preset` 再重新生成；只调平衡不要重新生成（见混音一节）。机器上接了哪些音源，以 `anyaudio_sources` 的 list 为准。
 - 没有 DSH 也能渲染：`node scripts/anyaudio-cli.mjs render <score.json> <out.wav>`（可加 `--font`、`--duration`、`--peak`、`--rate`），等价于只调 `anyaudio_music` 的离线路径。适合先离线把谱子调好再进视频流程。
 
-## 每条轨道选音源（可选）
+## 每条轨道选音源与音色（必填）
 
-- 同一个 score 里，不同轨道可以用不同 SoundFont：在轨道上写 `source`（音源 id 或 `.sf2` 路径）。不写就用默认音源（`action: "use"` 设置的那个，没设过就用装好的默认库）；写 `"auto"` 让插件按乐器族评分自动挑最好的已安装音源（1–10 分，可用 `anyaudio_sources` 的 `list` 查看各库分数）。
-- 典型用法：钢琴用专用钢琴库、电吉他用吉他库、贝斯和鼓用默认库。插件会自动给每套音源分配不冲突的 bank offset，不需要手工计算。
-**鼓组的键不是随便一个都响**。sf2 的鼓组只映射它自己列出的键：GeneralUser-GS 覆盖 0–127，而 Roland SC-88 只有 11 个（28、35、36、38、39、40、42、46、49、51、57）。拿 FL 采样器的鼓轨（常见 48–63）喂 SC-88，整轨会**静音**——渲染器现在会提前说清楚：`"X" answers only 11 drum key(s) (…) and none of this track's keys (…) is among them`，或部分缺失时 `has no drum sample for key(s) 48 — those notes will be silent`。看到这种警告就换带鼓的库（`font` 指向默认库），或把音符挪到它有的键上，别交付一条静音的鼓轨。另：鼓轨写 `source` 不会生效，鼓永远取 `font` 指定的那套库。
+## 每条轨道选音源与音色（必填）
 
+- **每条轨都要在谱里写明用哪个音源、哪个音色，写法照 `anyaudio_sources` list 里该条音色给出的字段**：
+  - SF2 音源：`source` 写音源 id，`instrument` 写音色名（GM 名、program 号，或 bank 不为 0 时用对象 `{program, bank, name}`）。
+  - VST3 音源：`source` 写音源 id，`preset` 写音色名。
+  - 本仓库还支持把声部交给挂载的插件：`vst`（VST3 或 64 位 VST2 路径）或 `hw`（硬件音源），见后文。
+- **为什么**：音源与音色的清单是唯一事实来源。乐器名千差万别、各音源组织音色的方式也不同，程序无法从一个乐器名猜出该用哪个音源、哪条音色；猜出来的不是你要的声音。所以选源是写谱人的职责，不是工具的。
+- **不指定会报错**：轨道没写 `source`、或写了清单里不存在的 id，工具直接报错，并把可用音源与音色清单附在错误里——照着清单改，不要猜、不要反复试。`preset` 只对 VST3 音源有意义，只写 `preset` 不写 `source` 也会报错。
+- 同一个 score 里不同轨可以用不同音源，SF2 与 VST3 可以混用；每条轨各自写自己的 `source`。写 `"auto"` 可以让插件按乐器族评分自动挑最好的已安装音源（1–10 分，`list` 里能看到各库分数）。
+- 音源没有可选音色时，list 会显示"1 个音色（默认）"，此时不写 `preset`，用该音源的默认音色。
+- **不要凭先验断言某类乐器的音色上限**——以清单里实际接入的音源与音色为准；逐轨报告会写明每条轨用了哪个音源、哪个音色。
+- **鼓组的键不是随便一个都响**：sf2 的鼓组只映射它自己列出的键——GeneralUser-GS 覆盖 0–127，有些老机种的库只有十几个（例如只有 28、35、36、38、39、40、42、46、49、51、57）。拿 48–63 这类采样器键位喂这种库，整轨会静音。渲染器现在会提前说清楚：`"X" answers only 11 drum key(s) (…) and none of this track's keys (…) is among them`，或部分缺失时 `has no drum sample for key(s) 48`；缺的键会自动移到该库最近的键并列出移动（`moved 48→49 (Hi-Mid Tom→Crash Cymbal 1)`），看到这种提示要按耳朵确认那几下还像不像原来的鼓。
+- 鼓组永远来自默认音源（第一套加载的库）；要换鼓就把带鼓的库作为 `font` 传进来。
 - **鼓组永远来自默认音源**（第一套加载的库）：其它库的鼓组不会被使用。要换鼓就把带鼓的库作为 `font` 传进来；默认库没有鼓时鼓轨不会响。
-- 装新音源：`anyaudio_sources` 的 `install`（按 id 下载推荐音源）或 `fromPath`（本地文件）。音源装进整台机器共用的音源库（`~/.dsh/anyaudio/fonts`），所有项目与 Agent 会话共用同一份，不用每个项目重装。想让某个库成为「不写 `source` 时的默认音源」，用 `action: "use"`（会写入 `music.font` 配置）。许可证不允许再分发的音源由用户自备，不要下载来源不明的文件。
+- 装新音源：SF2 用 `anyaudio_sources` 的 `install`（按 id 下载）或 `fromPath`（本地文件）；VST3 在设置页音源区扫描添加。**装之前必须征得用户同意，不得自行下载。**音源装进整台机器共用的位置，所有项目与 Agent 会话共用，不用每个项目重装。想让某个库成为鼓组来源，用 `action: "use"`（会写入 `music.font` 配置）。许可证不允许再分发的音源由用户自备，不要下载来源不明的文件。
 
 ## 旁白（anyaudio_tts）
 
@@ -483,6 +534,7 @@ MuseScore General 另有一组更响的版本（`sea-shore`、`bird-tweet`、`te
 - 自己写 Python/Node 调 edge-tts 生成旁白 → 绕过用户的 TTS 引擎与音色设置，MiMo 和 DeepSeek 永远用不上。
 - 给 `deepseek` 传 `rate`/`pitch`/`volume` 想调语气 → 它没有这三个参数，传了只会换来一条 warning 和一段没变速的声音；要控节奏就换引擎。
 - 只调 `anyaudio_music` 不看每轨电平 → 旋律把伴奏压没。电平每次调用都会返回，不用另测；看到不平衡就改片段增益。
+- 扫弦只写下扫 → 不像人弹的；上下交替、有节奏型才是扫弦。
 - **为了调音量把整首曲子重新生成** → 最贵也最常见的一个：音符一个没动、只改了一个数字，却把全部轨道重渲了一遍。改片段增益不重渲，改乐器音色才需要重新生成。
 - 为了"专业"堆十几个轨道 → 浑浊，先做减法。
 - 直接给一串文件路径当交付 → 用户拿到的是改不动的成品；先建工程再生成。

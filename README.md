@@ -99,6 +99,8 @@ A traditional DAW is built for a person, with AI as an assistant. This one is th
 
 Person and agent share one timeline. Select a range, press "Add to conversation", and that range becomes a reference; write what you want changed after it and the agent knows exactly where you mean. The reverse works too: adjust one clip yourself until it sounds right, then have the agent apply that to the rest.
 
+Every instrument track can also be exported as a MIDI file, one per track, ready to open in Cubase, Reaper or another workstation to be re-voiced or refined there.
+
 ## Install
 
 Node.js 22.19+ (22.x) or 24+ (bundled with DSH); ffmpeg is only needed for speech and for muxing video.
@@ -154,16 +156,17 @@ Then open the **DAW** tab at the top; the audio is already laid out by track:
 
 ## Sound sources
 
-The repository does not bundle SoundFonts. The plugin offers two **suggested** banks — GeneralUser GS as the default foundation and MuseScore General as an extra general-purpose orchestral bank — and it can also load compatible SoundFont files (`.sf2`, `.sf3`, `.dls`) placed in `~/.dsh/anyaudio/fonts`. That directory is one shared library for every project and agent session on the machine, so a bank installed once is available everywhere.
+The plugin supports two kinds of sound source: **SoundFont** (`.sf2`, `.sf3`, `.dls`) and **VST3 instrument plugins**. SoundFont banks are small and simple to install; VST3 instruments sound more realistic and are more adjustable. Both kinds can be used together.
 
-| Bank | Size | License | How to get it | Notes |
+| Source | Size | License | How to get it | Notes |
 | --- | --- | --- | --- | --- |
-| GeneralUser GS | 32 MB | GeneralUser GS License v2.0 | One click | **Suggested — default foundation and fallback**; the only bank guaranteed to include a drum kit |
-| MuseScore General | 40 MB | MIT | One click | **Suggested — extra general-purpose orchestral bank**; 309 presets, fuller strings and ensembles |
-| Upright Piano KW | 27 MB (7z) | CC0 1.0 | Manual | Single-instrument piano bank, used on piano tracks only |
-| Electric Guitar Clean | 446 MB (unpacked) | CC0 1.0 | Manual | Single-instrument electric guitar bank |
+| GeneralUser GS | 32 MB | GeneralUser GS License v2.0 | One click | **SoundFont — suggested, default foundation and fallback**; the only bank guaranteed to include a drum kit |
+| MuseScore General | 40 MB | MIT | Manual | **SoundFont — extra general-purpose orchestral bank**; 309 presets, fuller strings and ensembles |
+| Electric Guitar Clean | 446 MB (unpacked) | CC0 1.0 | Manual | SoundFont — single-instrument electric guitar bank |
+| Dexed | 8.9 MB | GPL-3.0 | Manual | VST3 — FM synthesizer, 32 presets |
+| Grand Piano (Audiolatry) | 6 MB | CC BY 3.0 | Manual | VST3 — single-instrument piano |
 
-Installing both suggested banks gives the widest coverage: GeneralUser GS stays the default, while MuseScore General joins the automatic ranking for orchestral families. Download links and extraction notes for the last two are in Settings and in [THIRD_PARTY_NOTICES.md](https://github.com/cloudoyx/any-audio/blob/main/THIRD_PARTY_NOTICES.md); keep the file names unchanged after extracting so the plugin can recognise them.
+The repository bundles no sound source. On first use, install the default GeneralUser GS as your foundation, then add other sources as you need them (custom sources such as Ample Sound are supported too).
 
 ## Orchestration tables
 
@@ -255,7 +258,7 @@ Measured speed: a three-minute song takes about 247 s on CPU and about 28.5 s on
 - **Project size caps** — a project is at most 15 minutes long and 20 tracks wide; going past either is an error.
 - **Audio only, for now** — a video can sit in the project as a reference picture, but this version does not trim, join or transition it.
 - **Tracks hold finished audio** — every clip on the timeline is an already-rendered wav/mp3 that can be auditioned on its own; MIDI, scores and parameters never go on the timeline.
-- **SoundFont and hosted VST only** — VST3 and 64-bit VST2 can be rendered; SFZ and Kontakt libraries cannot, and converting other source formats is out of scope for this version.
+- **SoundFont and hosted plugins only** — VST3 and 64-bit VST2 can be rendered; no SFZ, and sources that need a dedicated container such as Kontakt are out of scope for this version.
 - **32-bit plugins need a bridge** — they are listed (with the PE header read, not guessed) but a 64-bit host cannot load them. A bridge such as jBridge produces a 64-bit forwarding `.dll`; point the scan at that folder and it behaves like any other 64-bit VST2.
 - **Multi-output plugins are read from their main output** — a plugin that declares several stereo outputs renders its first pair; routing individual outputs to separate tracks is not exposed yet.
 - **No per-note envelope control** — attack and release come from the preset; use short notes with gaps for staccato and velocity plus expression for dynamics.
@@ -278,4 +281,4 @@ Any amount is appreciated.
 
 Code is MIT, see [LICENSE](https://github.com/cloudoyx/any-audio/blob/main/LICENSE).
 
-SoundFonts and third-party components keep their own licenses, see [THIRD_PARTY_NOTICES.md](https://github.com/cloudoyx/any-audio/blob/main/THIRD_PARTY_NOTICES.md). This repository distributes no sample banks.
+Sound sources and third-party components keep their own licenses, see [THIRD_PARTY_NOTICES.md](https://github.com/cloudoyx/any-audio/blob/main/THIRD_PARTY_NOTICES.md). This repository distributes no sample banks.
