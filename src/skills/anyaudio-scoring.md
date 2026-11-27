@@ -250,6 +250,8 @@
 
 - `action:"export"`：把 score 写成标准 MIDI 文件（默认落到 `.anyaudio/out/<标题>-<时间>.mid`）。也可以直接在 `anyaudio_music` 上写 `midi: true`，渲染音频的同时顺手把编排导出，省一次调用。
 - **`.mid` 可以直接渲染，不必先转成 score**：`anyaudio_music {projectId, midiFile:"some.mid"}` 内部做的是和 `action:"import"` 一样的读入，然后照常渲染。别同时给 `score` 和 `midiFile`（会报错）；`midi` 是另一个开关，表示「顺便把这次编曲导出成 .mid」。
+- **只要一段小节**：`{midiFile:"song.mid", bars:"37-39"}` 取第 37–39 小节（**1-based、闭区间**）并平移到 0；`pad:4` 前后各多留 4 小节听上下文（越界自动截）。小节长度按 `beatsPerBar`（默认 4，圆舞曲写 3）乘以 .mid 自己的 tempo map 算——所以「3 小节 = 6 秒」只在 120 BPM 4/4 成立，别的速度会不一样。长音跨过最后一小节时会切在边界上，不会溢出来。`bars` 只对 `midiFile` 有效，给 `score` 时会忽略并留一条 warning（score 本身已是切片）。
+
 - `action:"import"`：读一个 .mid 回到 score（按 MIDI 通道并轨，通道 10 是鼓，音色名由 program 反查），再交给 `anyaudio_music` 渲染成音频。人手写的一段旋律、别人给的伴奏、旧工程留下的 .mid 都走这条路。
 - `action:"analyze"`：只读地看一首 .mid——速度、拍点、音域、每个声部的音符密度与同时发声数（`maxPolyphony`）、以及对网格的比例。写之前先看，比照着印象猜可靠。
 

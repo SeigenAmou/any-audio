@@ -10,7 +10,7 @@ import { createVst3Process } from '../audio/vst3-process.js'
 import { scanPluginTimbres } from '../audio/vst3-presets.js'
 import { KEYSWITCH_HOLD_SEC, KEYSWITCH_LEAD_SEC } from '../audio/vst3-techniques.js'
 import { conformChannels, padOrTrim, parseWav, peakOf, resample, rmsOf, toDb } from '../audio/wav.js'
-import { encodeMidiFile, parseMidiFile, scoreFromMidi } from '../audio/midi-file.js'
+import { barStartSeconds, encodeMidiFile, parseMidiFile, scoreFromMidi } from '../audio/midi-file.js'
 import { renderScore } from '../audio/renderers.js'
 import { renderMixWithParts, renderVstStem, vstTracksOf } from '../audio/vst-track.js'
 import { hwTracksOf, renderHwStem } from '../audio/hw-track.js'
@@ -43,7 +43,54 @@ function originOf(track, layout) {
 }
 
 /** `midiFile:` is the read that anyaudio_midi action "import" does, without the round trip through a .json file: a .mid is already an arrangement, so hand it straight to the renderer. */
-export async function scoreFromMidiPath(value, workspaceRoot) {
+function parseBarRange(spec) {
+  const text = String(spec ?? '').trim()
+  const match = /^(\d+)\s*(?:-\s*(\d+))?$/.exec(text)
+  if (!match) throw new Error(`"bars" must look like "37-39" or "37", got "${text}"`)
+  const from = Number(match[1])
+  const to = match[2] ? Number(match[2]) : from
+  if (!(from >= 1)) throw new Error(`"bars" counts from 1, got ${from}`)
+  if (to < from) throw new Error(`"bars" needs the end after the start, got "${text}"`)
+  return { from, to }
+}
+
+/** Keep the bars a caller asked for and move them to zero; a long note that runs
+ *  past the last bar is cut there instead of bleeding in from outside. */
+function sliceScoreByBars(score, parsed, { bars, pad = 0, beatsPerBar = 4 }) {
+  const { from, to } = parseBarRange(bars)
+  const starts = barStartSeconds(parsed, beatsPerBar)
+  if (starts.length === 0) throw new Error('this .mid has no bars to slice')
+  if (from > starts.length) {
+    throw new Error(`"bars" asks for bar ${from} but this .mid has ${starts.length} bar(s)`)
+  }
+  const padBars = Math.max(0, Math.round(Number(pad) || 0))
+  const first = Math.max(1, from - padBars)
+  const last = Math.min(starts.length, to + padBars)
+  const t0 = starts[first - 1]
+  const t1 = last < starts.length ? starts[last] : Math.max(score.durationSec, starts[last - 1])
+  const tracks = score.tracks.map((track) => ({
+    ...track,
+    notes: track.notes
+      .filter(([start]) => start >= t0 - 1e-6 && start < t1 - 1e-6)
+      .map(([start, duration, midi, velocity]) => [
+        Number((start - t0).toFixed(4)),
+        Number(Math.max(0, Math.min(duration, t1 - start)).toFixed(4)),
+        midi,
+        velocity,
+      ])
+      .filter(([, duration]) => duration > 1e-4),
+  }))
+  const kept = tracks.reduce((sum, track) => sum + track.notes.length, 0)
+  return {
+    ...score,
+    title: `${score.title} (bars ${first}-${last})`,
+    tracks,
+    durationSec: Number((t1 - t0).toFixed(6)),
+    bars: { from: first, to: last, beatPerBar: beatsPerBar, notes: kept },
+  }
+}
+
+export async function scoreFromMidiPath(value, workspaceRoot, { bars = null, pad = 0, beatsPerBar = 4 } = {}) {
   const text = typeof value === 'string' ? value.trim() : ''
   if (!text) throw new Error('pass "midiFile": the .mid file to render')
   const path = isAbsolute(text) ? text : resolve(workspaceRoot, text)
@@ -53,7 +100,9 @@ export async function scoreFromMidiPath(value, workspaceRoot) {
   } catch (error) {
     throw new Error(`cannot read ${path}: ${error.message}`)
   }
-  return scoreFromMidi(parseMidiFile(buffer), { title: basename(path, extname(path)) })
+  const parsed = parseMidiFile(buffer)
+  const score = scoreFromMidi(parsed, { title: basename(path, extname(path)) })
+  return bars === null || bars === undefined ? score : sliceScoreByBars(score, parsed, { bars, pad, beatsPerBar })
 }
 
 function describeTracks(tracks) {
@@ -414,6 +463,9 @@ export const musicToolDefinition = finalizeTool({
     properties: {
       score: { oneOf: [{ type: 'object' }, { type: 'string' }], description: 'Score object as described above. A path to a .json file holding the same object is also accepted and is the better choice for long scores — keep the notes in a file and pass the path instead of inlining thousands of numbers.' },
       midiFile: { type: 'string', description: 'A .mid file to render instead of "score": it is read into a score here (same as anyaudio_midi action "import") and rendered as-is. Pass exactly one of "score" and "midiFile" ("midi" is a different flag: asking for a .mid export beside the WAV).' },
+      bars: { type: 'string', description: 'Only with "midiFile": keep these bars and move them to zero, 1-based and closed ("37-39" is bars 37, 38 and 39). A note that runs past the last bar is cut there. Bar length is "beatsPerBar" quarter notes (default 4), and the file\'s own tempo map decides how long a bar lasts.' },
+      pad: { type: 'number', description: 'Only with "bars": also keep this many bars before and after the range, so the caller hears the part in context. Default 0, clamped to the file.' },
+      beatsPerBar: { type: 'number', description: 'Only with "bars": quarter notes per bar for the slice, default 4 (4/4). A .mid almost never carries a usable time signature, so say 3 here for a waltz.' },
       projectId: { type: 'string', description: 'The clip bay project this music belongs to. Required: run anyaudio_project mode:"create" first when the task has no project yet. The rendered music is added to the project as material and placed on its own track.' },
       trackName: { type: 'string', description: 'Name of the track to create for this music, default the score title. Ignored with stems:true, where each score track gets its own project track named after it.' },
       startSec: { type: 'number', description: 'Where the music starts on the project timeline, default 0.' },
@@ -491,8 +543,15 @@ export const musicToolDefinition = finalizeTool({
     if (args.midiFile !== undefined && args.score !== undefined) {
       throw new Error('pass "score" or "midi", not both: "midi" is shorthand for reading a .mid into a score')
     }
+    if (args.bars !== undefined && args.midiFile === undefined) {
+      warnings.push('"bars" only applies to "midiFile": a score is already the slice you wrote')
+    }
     const rawScore = args.midiFile !== undefined
-      ? await scoreFromMidiPath(args.midiFile, workspaceRoot)
+      ? await scoreFromMidiPath(args.midiFile, workspaceRoot, {
+        bars: args.bars,
+        pad: args.pad,
+        beatsPerBar: args.beatsPerBar,
+      })
       : await readJsonParam(args.score, 'score', { workspaceRoot })
     // A track may point at a saved patch instead of repeating a plugin path and
     // two hundred parameter values. Resolution is async, so it happens here and

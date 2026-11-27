@@ -2342,5 +2342,33 @@ await test('many clips land in one call, and a clip with no start follows the on
   }
   assert(/at least one clip/.test(message), 'an empty items list is refused')
 })
+await test('a .mid can be sliced to a bar range a person counts out loud', async () => {
+  const { encodeMidiFile } = await import('../src/audio/midi-file.js')
+  const { scoreFromMidiPath } = await import('../src/tools/music.js')
+  const dir = await mkdtemp(join(tmpdir(), 'anyaudio-bars-'))
+  try {
+    const path = join(dir, 'eight-bars.mid')
+    // Eight bars of 4/4 at 120 BPM: a note on the first beat of every bar.
+    const notes = []
+    for (let bar = 0; bar < 8; bar += 1) notes.push({ start: bar * 2, duration: 1, midi: 60 + bar, velocity: 100 })
+    await writeFile(path, encodeMidiFile({ title: 'bars', tracks: [{ name: 'piano', channel: 0, program: 0, notes }] }))
+    const whole = await scoreFromMidiPath(path, dir)
+    assert(whole.durationSec >= 15, 'the whole file should be about 16 s', String(whole.durationSec))
+    const sliced = await scoreFromMidiPath(path, dir, { bars: '3-5' })
+    assert(Math.abs(sliced.durationSec - 6) < 0.01, 'bars 3-5 of 4/4 at 120 BPM are 6 s', String(sliced.durationSec))
+    assert(sliced.bars.from === 3 && sliced.bars.to === 5, 'the reply repeats the range')
+    const starts = sliced.tracks[0].notes.map((note) => note[0]).sort((a, b) => a - b)
+    assert(Math.abs(starts[0]) < 0.01, 'the first kept note lands on zero', String(starts[0]))
+    assert(sliced.tracks[0].notes.length === 3, 'three bars keep three notes', String(sliced.tracks[0].notes.length))
+    const padded = await scoreFromMidiPath(path, dir, { bars: '3-5', pad: 1 })
+    assert(Math.abs(padded.durationSec - 10) < 0.01, 'pad 1 makes it five bars', String(padded.durationSec))
+    let threw = null
+    try { await scoreFromMidiPath(path, dir, { bars: '99-100' }) } catch (error) { threw = error.message }
+    assert(threw && /has \d+ bar\(s\)/.test(threw), 'a range past the end says how many bars there are', String(threw))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

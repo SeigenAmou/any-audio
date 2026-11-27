@@ -386,6 +386,40 @@ export function programName(program) {
  * is kept as the label when there is one, because a person naming a track
  * "cello" usually means it.
  */
+/**
+ * Where each bar starts, in seconds, following the file's tempo map.
+ *
+ * A `.mid` carries tempo changes but almost never a time signature we can
+ * trust, so the bar length is `beatsPerBar` quarter notes by default (4/4).
+ * Callers that know the meter pass it in; `bars:"37-39"` is then a slice of
+ * the arrangement a person can count out loud.
+ */
+export function barStartSeconds(parsed, beatsPerBar = 4) {
+  const ppq = parsed.ppq || 480
+  const beats = Math.max(1, Math.round(Number(beatsPerBar) || 4))
+  const ticksPerBar = ppq * beats
+  const segs = (parsed.tempos ?? []).slice().sort((a, b) => a.tick - b.tick)
+  const limit = Math.max(0, parsed.durationSec ?? 0) + ticksPerBar / ppq
+  const out = []
+  let prevTick = 0
+  let us = 500000
+  let si = 0
+  let seconds = 0
+  for (let bar = 0; bar < 20000; bar += 1) {
+    const barTick = bar * ticksPerBar
+    while (si < segs.length && segs[si].tick <= barTick) {
+      seconds += ((segs[si].tick - prevTick) * us) / 1e6 / ppq
+      prevTick = segs[si].tick
+      us = segs[si].usPerQuarter || us
+      si += 1
+    }
+    seconds += ((barTick - prevTick) * us) / 1e6 / ppq
+    prevTick = barTick
+    out.push(Number(seconds.toFixed(6)))
+    if (out.length > 2 && seconds > limit) break
+  }
+  return out
+}
 export function scoreFromMidi(parsed, { title = null } = {}) {
   const byChannel = new Map()
   for (const track of parsed.tracks ?? []) {
