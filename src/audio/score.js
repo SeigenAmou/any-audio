@@ -227,7 +227,7 @@ function normalizeVst(spec, trackName) {
  * the software — hence `latencyMs`, measured once per rig by
  * `anyaudio_midiout calibrate`.
  */
-function normalizeHw(spec, trackName, externals = []) {
+function normalizeMidi(spec, trackName, externals = []) {
   if (spec === undefined || spec === null || spec === false) return undefined
   let raw = typeof spec === 'string' ? { port: spec } : spec
   // A rig configured in Settings → AnyAudio can be named instead of spelled out:
@@ -246,9 +246,12 @@ function normalizeHw(spec, trackName, externals = []) {
         port: rig.port,
         channel: rig.channel,
         program: rig.program,
+        bank: rig.bank,
+        bankLsb: rig.bankLsb,
         captureDevice: rig.device,
         latencyMs: rig.latencyMs,
         voices: rig.voices,
+        capture: rig.device === undefined ? false : { device: rig.device },
       }
       raw = typeof spec === 'string'
         ? fromRig
@@ -256,12 +259,12 @@ function normalizeHw(spec, trackName, externals = []) {
     }
   }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new ScoreError(`track "${trackName}": hw must be a MIDI port name or { port, channel, program }`)
+    throw new ScoreError(`track "${trackName}": midi (or hw) must be a MIDI port name or { port, channel, program }`)
   }
   const port = typeof raw.port === 'string' ? raw.port.trim() : ''
   if (!port) {
     throw new ScoreError(
-      `track "${trackName}": hw needs a "port" — the name of a MIDI output (anyaudio_midiout action "ports" lists them)`,
+      `track "${trackName}": midi needs a "port" — the name of a MIDI output (anyaudio_midiout action "ports" lists them)`,
     )
   }
   const wantedChannel = Number(raw.channel)
@@ -273,13 +276,65 @@ function normalizeHw(spec, trackName, externals = []) {
   const latencyMs = Number.isFinite(wantedLatency) ? Math.max(0, wantedLatency) : undefined
   const wantedVoices = Number(raw.voices)
   const voices = Number.isFinite(wantedVoices) && wantedVoices > 0 ? Math.round(wantedVoices) : undefined
+  const wantedBank = Number(raw.bank)
+  const bank = Number.isInteger(wantedBank) ? Math.max(0, Math.min(127, wantedBank)) : undefined
+  const wantedBankLsb = Number(raw.bankLsb)
+  const bankLsb = Number.isInteger(wantedBankLsb) ? Math.max(0, Math.min(127, wantedBankLsb)) : undefined
+  // A MIDI part may be pure output: it sends notes to a port and nothing
+  // records it, so it contributes no audio to the render. "capture" turns that
+  // on, and `hw` is now just sugar for "midi plus capture".
+  let capture = null
+  if (raw.capture === false) {
+    capture = null
+  } else if (raw.capture && typeof raw.capture === 'object' && !Array.isArray(raw.capture)) {
+    const device = typeof raw.capture.device === 'string' ? raw.capture.device.trim() : captureDevice
+    const wantedCaptureLatency = Number(raw.capture.latencyMs)
+    const captureLatency = Number.isFinite(wantedCaptureLatency) ? Math.max(0, wantedCaptureLatency) : latencyMs
+    capture = {
+      ...(device ? { device } : {}),
+      ...(captureLatency === undefined ? {} : { latencyMs: captureLatency }),
+      ...(raw.capture.align === false ? { align: false } : {}),
+    }
+  } else if (captureDevice || latencyMs !== undefined) {
+    // A rig may name only the measured latency and let the render pick the input
+    // from ANYAUDIO_CAPTURE_DEVICE; keeping the number here means `hw` stays a
+    // valid spelling for a part whose input is configured once on the machine.
+    capture = {
+      ...(captureDevice ? { device: captureDevice } : {}),
+      ...(latencyMs === undefined ? {} : { latencyMs }),
+    }
+  }
   return {
     port,
     channel,
     ...(program === undefined ? {} : { program }),
-    ...(captureDevice ? { captureDevice } : {}),
-    ...(latencyMs === undefined ? {} : { latencyMs }),
+    ...(bank === undefined ? {} : { bank }),
+    ...(bankLsb === undefined ? {} : { bankLsb }),
     ...(voices === undefined ? {} : { voices }),
+    capture,
+  }
+}
+
+/** `hw` is the old spelling of "a MIDI part with a capture rig": same thing,
+ *  only it insists on a recording input, because a part played on a module and
+ *  never recorded would leave the mix silent. */
+function normalizeHw(spec, trackName, externals = []) {
+  const midi = normalizeMidi(spec, trackName, externals)
+  if (!midi.capture || !midi.capture.device) {
+    throw new ScoreError(
+      `track "${trackName}": hw plays on "${midi.port}" but nothing records it: `
+      + 'write midi: { port, capture: { device } } for output-only parts, or add "captureDevice" to hw',
+    )
+  }
+  return {
+    port: midi.port,
+    channel: midi.channel,
+    ...(midi.program === undefined ? {} : { program: midi.program }),
+    ...(midi.bank === undefined ? {} : { bank: midi.bank }),
+    ...(midi.bankLsb === undefined ? {} : { bankLsb: midi.bankLsb }),
+    ...(midi.voices === undefined ? {} : { voices: midi.voices }),
+    captureDevice: midi.capture.device,
+    ...(midi.capture.latencyMs === undefined ? {} : { latencyMs: midi.capture.latencyMs }),
   }
 }
 
@@ -534,18 +589,48 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     // A plugin is its own instrument in its own process: it does not claim one
     // of the 16 SoundFont channels, and its bank/program events are meaningless.
     const vst = normalizeVst(track.vst, name)
-    if (vst && track.hw) {
-      throw new ScoreError(`track "${name}" asks for both vst and hw; a part has one sound source — keep one of them`)
+    if (vst && (track.hw || track.midi)) {
+      throw new ScoreError(`track "${name}" asks for both vst and a MIDI port; a part has one sound source — keep one of them`)
     }
-    const hw = vst ? undefined : normalizeHw(track.hw, name, externals)
-    const external = Boolean(vst || hw)
+    if (track.midi !== undefined && track.hw !== undefined) {
+      throw new ScoreError(
+        `track "${name}" writes both midi and hw; hw is the old name of "midi with a capture rig" — keep one of them`,
+      )
+    }
+    const midi = vst ? undefined : normalizeMidi(track.midi !== undefined ? track.midi : track.hw, name, externals)
+    // A capture rig is what makes the part audible in the mix. Without one the
+    // part is pure MIDI output: it plays on the module, nothing records it, and
+    // the render has no audio for it — say so instead of letting it vanish.
+    // `hw` spelled in the score means "record this back", so it always has a
+    // capture half — even when the rig is only named later (the render then
+    // says which input is missing). `midi` with a capture rig behaves the same;
+    // `midi` alone is output only.
+    const recorded = Boolean(midi && (track.hw !== undefined || (midi.capture && midi.capture.device)))
+    const hw = recorded ? {
+      port: midi.port,
+      channel: midi.channel,
+      ...(midi.program === undefined ? {} : { program: midi.program }),
+      ...(midi.bank === undefined ? {} : { bank: midi.bank }),
+      ...(midi.bankLsb === undefined ? {} : { bankLsb: midi.bankLsb }),
+      ...(midi.voices === undefined ? {} : { voices: midi.voices }),
+      ...(midi.capture && midi.capture.device ? { captureDevice: midi.capture.device } : {}),
+      ...(midi.capture && midi.capture.latencyMs !== undefined ? { latencyMs: midi.capture.latencyMs } : {}),
+      ...(midi.capture && midi.capture.align === false ? { align: false } : {}),
+    } : undefined
+    if (midi && !hw && warn) {
+      warn(
+        `track "${name}" sends MIDI to "${midi.port}" but records nothing, so it adds no audio to the render; `
+        + 'add capture: { device } to hear it, or export the arrangement as .mid',
+      )
+    }
+    const external = Boolean(vst || midi)
     let channel
     if (vst) {
       // A plugin part does not consume a SoundFont channel, but a multi-timbral
       // plugin does listen on one, so the part's own number is passed through.
       channel = Number.isInteger(vst.channel) ? vst.channel : 0
     } else if (external) {
-      channel = Number.isInteger(hw?.channel) ? hw.channel : 0
+      channel = Number.isInteger(midi?.channel) ? midi.channel : 0
     } else {
       channel = Number.isInteger(track.channel) ? track.channel : drums ? 9 : undefined
       if (channel === undefined) {
@@ -629,6 +714,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       name, channel, program, bank: instrument.bank, instrument: instrument.label, instrumentExplicit, source,
       preset, vst3, drums, gainDb, pan, reverb, chorus, mixGain, notes, events, endSec: end,
       ...(vst ? { vst } : {}),
+      ...(midi ? { midi } : {}),
       ...(hw ? { hw } : {}),
     }
   })

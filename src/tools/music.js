@@ -39,6 +39,7 @@ function originOf(track, layout) {
     }
   }
   if (track.hw) return { kind: 'hw', port: track.hw.port, device: track.hw.captureDevice ?? null }
+  if (track.midi) return { kind: 'midi', port: track.midi.port, capture: null }
   const program = layout?.get(track.name)
   return { kind: 'font', instrument: track.instrument ?? null, program: program?.program ?? null }
 }
@@ -635,7 +636,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
         const last = notes.length ? Math.max(...notes.map((note) => note.start + note.duration)) : null
         return {
           name: track.name,
-          kind: track.vst3 ? 'vst3' : track.vst ? 'vst' : track.hw ? 'hw' : 'font',
+          kind: track.vst3 ? 'vst3' : track.vst ? 'vst' : track.hw ? 'hw' : track.midi ? 'midi' : 'font',
           notes: notes.length,
           firstNoteSec: first,
           lastNoteSec: last,
@@ -881,7 +882,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
         // looking at the wrong thing.
         instrument: track.vst
           ? `vst: ${basename(track.vst.plugin)}`
-          : track.hw ? `hw: ${track.hw.port}` : track.instrument,
+          : track.hw ? `hw: ${track.hw.port}` : track.midi ? `midi: ${track.midi.port} (output only)` : track.instrument,
         program: vst3 ? null : assignment?.program ?? track.program,
         // The bank the render actually used: an object-form instrument names a
         // patch outside bank 0, and the reply has to show which one was loaded

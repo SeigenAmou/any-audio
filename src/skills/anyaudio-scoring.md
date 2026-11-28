@@ -342,6 +342,8 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 ## 线路输入与硬件音源（anyaudio_record / anyaudio_midiout）
 
 有些声音既不在 SoundFont 里也不在插件里，而在机器外面：一台 EDIROL SD-20、一块机架音源、一支接在声卡上的麦克风。它们自己发声，宿主只能从线路输入把它听回来。
+**两种写法，一件事**：`midi` 是主语法——把这个声部送到一个 MIDI 端口；它带 `capture: { device }` 时同一遍录制把线路输入收回来（这才是混音里听得到的那一份）。`hw` 是 `midi`+`capture` 的旧拼法，仍然能用。只写 `midi` 不写 `capture` 就是**纯输出**：音源会响、渲染里没有它，回执会明确说「records nothing, adds no audio」——这种声部适合导出 `.mid` 拿到自己的宿主里用，不适合放进混音。
+
 
 - `anyaudio_record`：`action:"devices"` 列出所有输入（每个物理口在 MME/DirectSound/WASAPI/WDM-KS 各出现一次，同名的会一起列出）；`action:"record"` 录指定秒数到素材。`device` 可以写序号也可以写名字的一部分，名字有歧义时它要求你给序号而不是瞎猜。
 - `anyaudio_midiout`：`action:"ports"` 列出 MIDI 输出与输入；`action:"play"` 往某个端口发音符（`notes` 与 VST 同一套写法，`[开始秒, 时长秒, 音高, 力度, 通道?]`）；带上 `captureDevice` 就一边弹一边把音源的线路输出录下来，两者共用同一个时钟。

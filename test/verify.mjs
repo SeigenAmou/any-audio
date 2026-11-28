@@ -1953,7 +1953,7 @@ await test('a hardware part claims no SoundFont channel and still compiles', asy
   } catch (error) {
     both = error
   }
-  assert(both && /both vst and hw/.test(both.message), 'a part with two sound sources is refused')
+  assert(both && /both vst and a MIDI port/.test(both.message), 'a part with two sound sources is refused')
 
   let noPort = null
   try {
@@ -1961,7 +1961,7 @@ await test('a hardware part claims no SoundFont channel and still compiles', asy
   } catch (error) {
     noPort = error
   }
-  assert(noPort && /hw needs a "port"/.test(noPort.message), 'a hardware part without a port says what it needs')
+  assert(noPort && /midi needs a "port"/.test(noPort.message), 'a MIDI part without a port says what it needs')
 
   // A module answers a fixed number of voices, so the score has to know how many
   // notes sound at once: past that count the extra notes are silent, not broken.
@@ -2421,6 +2421,36 @@ await test('a tempo map decides where the bar lines fall, not where the notes so
   assert(back.tempos[0].usPerQuarter === 500000 && back.tempos[1].usPerQuarter === 666667, 'the microseconds per quarter follow the bpm')
   const notes = back.tracks.slice(1).flatMap((track) => track.notes ?? [])
   assert(notes.length === 2 && notes[0].start === 0 && notes[1].start === 4, 'the second note still starts at 4s')
+})
+
+await test('a midi part can be output only, and capture is what makes it audible', async () => {
+  const out = compileScore({
+    tracks: [
+      { name: 'lead', midi: { port: 'loopMIDI port 1', channel: 2, program: 5 }, notes: [[0, 1, 'C4']] },
+    ],
+  })
+  const part = out.tracks[0]
+  assert(part.midi && part.midi.port === 'loopMIDI port 1', 'the port is kept')
+  assert(part.midi.channel === 2 && part.midi.program === 5, 'the channel and program are kept')
+  assert(part.hw === undefined, 'an output-only part has no capture half')
+  assert(out.warnings.some((line) => /records nothing/.test(line)), 'an output-only part says it adds no audio')
+
+  const recorded = compileScore({
+    tracks: [
+      { name: 'lead', midi: { port: 'loopMIDI port 1', capture: { device: 'USB Audio', latencyMs: 12 } }, notes: [[0, 1, 'C4']] },
+    ],
+  })
+  const rec = recorded.tracks[0]
+  assert(rec.midi.capture.device === 'USB Audio', 'the capture rig is kept on the midi part')
+  assert(rec.hw && rec.hw.captureDevice === 'USB Audio' && rec.hw.latencyMs === 12, 'capture is what hw means')
+
+  let twice = null
+  try {
+    compileScore({ tracks: [{ name: 'x', midi: 'p', hw: 'q', notes: [[0, 1, 'C4']] }] })
+  } catch (error) {
+    twice = error
+  }
+  assert(twice && /both midi and hw/.test(twice.message), 'hw is the old name and cannot be written twice')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

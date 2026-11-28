@@ -23,6 +23,9 @@ export function partKind(track) {
   if (track.vst3 && track.vst3.plugin) return 'vst3'
   if (track.vst && track.vst.plugin) return 'vst'
   if (track.hw) return 'hw'
+  // A part that only sends MIDI plays on a module and records nothing, so it
+  // has no audio of its own — worth its own kind instead of pretending to be sf2.
+  if (track.midi) return 'midi'
   return 'sf2'
 }
 
@@ -30,9 +33,10 @@ export function partKind(track) {
 export function partTarget(track) {
   const kind = partKind(track)
   const channel = Number.isInteger(track.channel) ? `ch ${track.channel}` : ''
-  if (kind === 'hw') {
-    const port = track.hw?.port ?? 'a MIDI port'
-    return `-> ${port} ${channel}`.trim()
+  if (kind === 'hw' || kind === 'midi') {
+    const port = track.hw?.port ?? track.midi?.port ?? 'a MIDI port'
+    const suffix = kind === 'midi' ? ' (output only)' : ''
+    return `-> ${port} ${channel}${suffix}`.trim()
   }
   if (kind === 'vst' || kind === 'vst3') {
     const plugin = track.vst?.plugin ?? track.vst3?.plugin ?? 'a plugin'
