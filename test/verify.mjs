@@ -2453,5 +2453,37 @@ await test('a midi part can be output only, and capture is what makes it audible
   assert(twice && /both midi and hw/.test(twice.message), 'hw is the old name and cannot be written twice')
 })
 
+await test('a note can be counted in bars instead of seconds', async () => {
+  const out = compileScore({
+    tempo: [{ bar: 1, bpm: 120, meter: [4, 4] }, { bar: 5, bpm: 60 }],
+    tracks: [{
+      name: 'a',
+      notes: [
+        ['3:1:1:0', 1, 'C4'],
+        { t: { bar: 2, beat: 3 }, d: 2, p: 'E4' },
+      ],
+    }],
+  })
+  const [first, second] = out.tracks[0].notes
+  assert(Math.abs(first.start - 4) < 1e-6, 'bar 3 at 120 BPM starts at 4s')
+  assert(Math.abs(second.start - 3) < 1e-6, 'bar 2 beat 3 is one beat into bar 2, so 3s at 120 BPM')
+  assert(Math.abs(second.duration - 2) < 1e-6, 'a duration stays in seconds')
+
+  // the tempo map bends the bar line: bar 5 onwards is 60 BPM, so bar 5 starts at 8s
+  const later = compileScore({
+    tempo: [{ bar: 1, bpm: 120, meter: [4, 4] }, { bar: 5, bpm: 60 }],
+    tracks: [{ name: 'a', notes: [['5:1:1:0', 1, 'C4']] }],
+  })
+  assert(Math.abs(later.tracks[0].notes[0].start - 8) < 1e-6, 'a tempo change moves the bar line')
+
+  let bad = null
+  try {
+    compileScore({ tracks: [{ name: 'a', notes: [['nope', 1, 'C4']] }] })
+  } catch (error) {
+    bad = error
+  }
+  assert(bad && /must be seconds or bar:beat/.test(bad.message), 'a time it cannot read says what it accepts')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

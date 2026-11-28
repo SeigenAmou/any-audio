@@ -3,7 +3,7 @@
  * friendly) into sample-accurate MIDI events for the SoundFont renderer.
  */
 import { applyExpression } from './expression.js'
-import { buildTempoMap } from './tempo.js'
+import { barToSeconds, buildTempoMap } from './tempo.js'
 
 import { builtInCatalog } from './vst3-catalog.js'
 
@@ -355,7 +355,29 @@ function number(value, what) {
   return parsed
 }
 
-function collectNotes(track, warn, drums = false) {
+/** A time may be written in seconds (0.5) or counted out loud ("3:1:1:0",
+ *  { bar: 3, beat: 1 }) — the latter goes through the tempo map, so a bar line
+ *  means the same thing to the score and to the person who wrote it. */
+function scoreTime(value, timeMap, what) {
+  if (typeof value === 'number') return value
+  if (typeof value === 'string' && /^\d+(:\d+){0,3}$/.test(value.trim())) {
+    const [bar, beat = 1, sixteenth = 1, tick = 0] = value.trim().split(':').map(Number)
+    return barToSeconds(timeMap, bar, beat, sixteenth, tick)
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && value.bar !== undefined) {
+    return barToSeconds(
+      timeMap,
+      Number(value.bar),
+      Number(value.beat ?? 1),
+      Number(value.sixteenth ?? 1),
+      Number(value.tick ?? 0),
+    )
+  }
+  const got = typeof value === 'string' ? JSON.stringify(value) : String(value)
+  throw new Error(`${what} must be seconds or bar:beat:sixteenth:tick, got ${got}`)
+}
+
+function collectNotes(track, warn, drums = false, timeMap = null) {
   const notes = []
   if (!Array.isArray(track.notes)) throw new Error(`track "${track.name}" needs a notes array`)
   const parseOne = (value) => {
@@ -379,7 +401,9 @@ function collectNotes(track, warn, drums = false) {
     } else {
       throw new Error(`track "${track.name}" note #${index} must be an array or object`)
     }
-    start = number(start, `note #${index} start`)
+    start = timeMap ? scoreTime(start, timeMap, `note #${index} start`) : number(start, `note #${index} start`)
+    // A start is a place on the timeline and may be counted in bars; a duration
+    // is a length, so it stays in seconds (a bar is not a length at a tempo change).
     duration = number(duration, `note #${index} duration`)
     if (start < 0) throw new Error(`track "${track.name}" note #${index} starts before 0`)
     if (duration <= 0) throw new Error(`track "${track.name}" note #${index} duration must be > 0`)
@@ -571,6 +595,18 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     if (!warnings.includes(message)) warnings.push(message)
   }
 
+  let tempo = []
+  if (score.tempo !== undefined && score.tempo !== null) {
+    try {
+      tempo = buildTempoMap(score.tempo)
+    } catch (error) {
+      throw new ScoreError(error.message)
+    }
+  }
+  // Bar lines mean something even without an explicit tempo: a score counted in
+  // bars (bar:beat:sixteenth:tick) reads as 4/4 at 120 BPM unless it says otherwise.
+  const timeMap = tempo.length ? tempo : buildTempoMap([{ bar: 1, bpm: 120, meter: [4, 4] }])
+
   const usedChannels = new Set()
   // Per-track volume goes out as CC7. spessasynth maps CC7 to initialAttenuation
   // with a 40*log10 curve (not the 20*log10 a plain dB gain would need), so the
@@ -670,7 +706,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     const reverb = Number.isFinite(Number(track.reverb)) ? Math.max(0, Math.min(1, Number(track.reverb))) : 0.35
     const chorus = Number.isFinite(Number(track.chorus)) ? Math.max(0, Math.min(1, Number(track.chorus))) : 0
 
-    let notes = collectNotes(track, warn, drums)
+    let notes = collectNotes(track, warn, drums, timeMap)
     notes = applyHumanize(notes, track.humanize, index * 7919 + (Number(track.humanize?.seed) || 0))
     // A drum track's pitches are GM drum-map keys, not a melodic range, so the
     // measured range does not apply to it. Whether a drum track may name a VST3
@@ -755,14 +791,6 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
   // a score keeps its note times in seconds, so changing the tempo at bar 9
   // never moves audio that was already rendered. buildTempoMap throws a plain
   // Error; a bad score should surface as a ScoreError like every other refusal.
-  let tempo = []
-  if (score.tempo !== undefined && score.tempo !== null) {
-    try {
-      tempo = buildTempoMap(score.tempo)
-    } catch (error) {
-      throw new ScoreError(error.message)
-    }
-  }
 
   const endSec = tracks.reduce((max, track) => Math.max(max, track.endSec), 0)
   const declared = Number(score.durationSec)

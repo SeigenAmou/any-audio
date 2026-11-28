@@ -95,6 +95,21 @@
 
 表本身可以从 `.csv`、`.xlsx`（每个工作表一张表）或 Google Sheets 链接导入：`{action:"orchestration_import", name:"…", path:"…"}` 或 `{action:"orchestration_import", name:"…", url:"https://docs.google.com/spreadsheets/d/…"}`，走代理时加 `"proxy":"http://127.0.0.1:7881"`。导入后表存在 `~/.dsh/anyaudio/orchestrations/`，每台机器一份。
 
+## 小节与速度
+
+**音符的时间可以按小节数**——位置是 `"小节:拍:十六分:刻度"`（都是 1-based，刻度 0–127）或 `{ "bar": 3, "beat": 1 }`，走同一张 tempo map：
+
+```json
+{ "tempo": [{ "bar": 1, "bpm": 120, "meter": [4, 4] }, { "bar": 17, "bpm": 84, "meter": [3, 4] }],
+  "tracks": [{ "name": "lead", "source": "generaluser", "instrument": "koto",
+    "notes": [["1:1:1:0", 1.0, "D4", 78], ["17:3:1:0", 1.5, "A4", 90]] }] }
+```
+
+- `tempo` 按 `bar` 递增写，每段可以带自己的 `meter`；不写就是 120 BPM 4/4。
+- **只有起始位置能写小节**；`duration` 始终是秒——拍号或速度一变，一「小节」就不再是同一段时间，长度不能靠它。
+- 同一份谱里两种写法可以混用：秒适合拼贴素材，小节适合跟人一起数拍子。
+- 写错会说清能写什么：`note #0 start must be seconds or bar:beat:sixteenth:tick, got "nope"`。
+
 ## 演奏法（音符第五项）
 
 第五项 `art` 有两类，写法一样，来源不同：
