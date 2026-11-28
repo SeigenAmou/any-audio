@@ -95,6 +95,19 @@
 
 表本身可以从 `.csv`、`.xlsx`（每个工作表一张表）或 Google Sheets 链接导入：`{action:"orchestration_import", name:"…", path:"…"}` 或 `{action:"orchestration_import", name:"…", url:"https://docs.google.com/spreadsheets/d/…"}`，走代理时加 `"proxy":"http://127.0.0.1:7881"`。导入后表存在 `~/.dsh/anyaudio/orchestrations/`，每台机器一份。
 
+## 录音文件也能当一条轨
+
+有些声音没法用音符写出来：一段实地录音、一个自己做好的 loop、别人给的 stem。给轨道写 `"audio"` 就把它当作一条轨参加混音：
+
+```json
+{"name": "海边", "audio": {"path": "assets/sea.wav", "gainDb": -6, "pan": -0.2}}
+```
+
+- 路径按工作区解析（和别的文件参数一样），只收 `.wav`；文件读不出来、或整段是静音，会直接报错，不会悄悄当静音混进去。
+- 采样率不同会重采样到工程的采样率；长度补零或裁到 `durationSec`。
+- `audio` 轨没有音符、没有 program，也不能和 `source` / `vst` / `hw` / `midi` 同时写。
+- 它和音源轨一样参与 stems、gainDb/pan 平衡与母带归一化；`dryRun` 里标成 `audio`，`origin` 记为 `audio`。
+
 ## 小节与速度
 
 **音符的时间可以按小节数**——位置是 `"小节:拍:十六分:刻度"`（都是 1-based，刻度 0–127）或 `{ "bar": 3, "beat": 1 }`，走同一张 tempo map：

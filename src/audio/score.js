@@ -233,6 +233,29 @@ function normalizeVst(spec, trackName) {
  * the software — hence `latencyMs`, measured once per rig by
  * `anyaudio_midiout calibrate`.
  */
+/**
+ * A part that is already a recording. It has no program, no channel and no
+ * bank: the file is the part, and the score only says where it sits and how
+ * loud it is. Kept separate from `midi` because nothing is sent anywhere --
+ * a wav is summed into the mix, not played.
+ */
+function midiSpecPresent(track) {
+  return track.midi !== undefined || track.hw !== undefined
+}
+
+function normalizeAudio(spec, trackName) {
+  if (spec === undefined || spec === null || spec === false) return undefined
+  const raw = typeof spec === 'string' ? { path: spec } : spec
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ScoreError(`track "${trackName}": audio must be a file path or { path, gainDb, pan }`)
+  }
+  const path = typeof raw.path === 'string' ? raw.path.trim() : ''
+  if (!path) throw new ScoreError(`track "${trackName}": audio needs a "path" to a .wav file`)
+  const gainDb = Number.isFinite(raw.gainDb) ? raw.gainDb : undefined
+  const pan = Number.isFinite(raw.pan) ? Math.max(-1, Math.min(1, raw.pan)) : undefined
+  return { path, ...(gainDb !== undefined ? { gainDb } : {}), ...(pan !== undefined ? { pan } : {}) }
+}
+
 function normalizeMidi(spec, trackName, externals = []) {
   if (spec === undefined || spec === null || spec === false) return undefined
   let raw = typeof spec === 'string' ? { port: spec } : spec
@@ -631,6 +654,20 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     // A plugin is its own instrument in its own process: it does not claim one
     // of the 16 SoundFont channels, and its bank/program events are meaningless.
     const vst = normalizeVst(track.vst, name)
+    // A part that is already a recording: the file plays through nothing, so it
+    // claims no channel and produces no MIDI events. It also cannot share a
+    // track with a sound source -- a part answers through one path only.
+    // The clash is checked before normalising: writing a file and a source on the
+    // same part must say so, whichever one would otherwise win.
+    const wantsAudio = track.audio !== undefined && track.audio !== null && track.audio !== false
+    const namedSource = vst !== undefined
+      || track.hw !== undefined
+      || track.midi !== undefined
+      || (typeof track.source === 'string' && track.source.trim() !== '')
+    if (wantsAudio && namedSource) {
+      throw new ScoreError(`track "${name}" writes both audio and a sound source; a part is either a file or something played — keep one of them`)
+    }
+    const audio = wantsAudio ? normalizeAudio(track.audio, name) : undefined
     if (vst && (track.hw || track.midi)) {
       throw new ScoreError(`track "${name}" asks for both vst and a MIDI port; a part has one sound source — keep one of them`)
     }
@@ -667,7 +704,10 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     }
     const external = Boolean(vst || midi)
     let channel
-    if (vst) {
+    if (audio) {
+      // A recording is not addressed by anything: no channel, no program.
+      channel = undefined
+    } else if (vst) {
       // A plugin part does not consume a SoundFont channel, but a multi-timbral
       // plugin does listen on one, so the part's own number is passed through.
       channel = Number.isInteger(vst.channel) ? vst.channel : 0
@@ -712,7 +752,9 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     const reverb = Number.isFinite(Number(track.reverb)) ? Math.max(0, Math.min(1, Number(track.reverb))) : 0.35
     const chorus = Number.isFinite(Number(track.chorus)) ? Math.max(0, Math.min(1, Number(track.chorus))) : 0
 
-    let notes = collectNotes(track, warn, drums, timeMap)
+    // A recorded part plays itself: notes on it would be sent to nothing, so
+    // they are read (and validated) but not turned into events.
+    let notes = audio ? [] : collectNotes(track, warn, drums, timeMap)
     notes = applyHumanize(notes, track.humanize, index * 7919 + (Number(track.humanize?.seed) || 0))
     // A drum track's pitches are GM drum-map keys, not a melodic range, so the
     // measured range does not apply to it. Whether a drum track may name a VST3
@@ -729,7 +771,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       if (Number.isInteger(vst.bankLsb)) events.push({ t: 0, type: 'banklsb', channel, bank: vst.bankLsb })
       events.push({ t: 0, type: 'program', channel, program })
     }
-    if (!external) {
+    if (!external && !audio) {
       events.push({ t: 0, type: 'bank', channel, bank: instrument.bank })
       events.push({ t: 0, type: 'program', channel, program })
       events.push({ t: 0, type: 'cc', channel, controller: 7, value: cc7For(gainDb - gainCeiling) })
@@ -758,6 +800,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
       ...(vst ? { vst } : {}),
       ...(midi ? { midi } : {}),
       ...(hw ? { hw } : {}),
+      ...(audio ? { audio } : {}),
     }
   })
 

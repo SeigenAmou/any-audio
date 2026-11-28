@@ -2505,5 +2505,35 @@ await test('a patch file travels with the part instead of being dropped', async 
   assert(other.tracks[0].vst.state === undefined, 'only an object is a state')
 })
 
+await test('a recorded file is a track of its own', async () => {
+  const compiled = compileScore({
+    tracks: [
+      { name: 'sea', audio: { path: 'assets/sea.wav', gainDb: -6, pan: -0.2 }, notes: [] },
+      { name: 'piano', source: 'generaluser', instrument: 'piano', notes: [[0, 1, 'C4']] },
+    ],
+  })
+  const part = compiled.tracks[0]
+  assert(part.audio && part.audio.path === 'assets/sea.wav', 'the file stays on the track')
+  assert(part.channel === undefined, 'a recorded part takes no MIDI channel')
+  assert(part.events.length === 0, 'it produces no MIDI events')
+  assert(compiled.tracks[1].channel === 0, 'the next part still gets channel 0')
+
+  let threw = null
+  try {
+    compileScore({ tracks: [{ name: 'x', audio: { path: 'a.wav' }, source: 'generaluser', notes: [] }] })
+  } catch (error) {
+    threw = error
+  }
+  assert(threw && /both audio and a sound source/.test(threw.message), 'a part cannot be both')
+
+  let missing = null
+  try {
+    compileScore({ tracks: [{ name: 'y', audio: { gainDb: -3 } }] })
+  } catch (error) {
+    missing = error
+  }
+  assert(missing && /audio needs a "path"/.test(missing.message), 'the file is required')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

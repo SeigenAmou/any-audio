@@ -93,7 +93,9 @@ export async function renderCompiled(compiled, options) {
   // A VST part has no SoundFont voice; it is rendered by the bridge and summed
   // onto this mix (see audio/vst-track.js). Leaving it in would claim a channel
   // and silently play the default piano.
-  const playable = compiled.tracks.filter((track) => !(track.vst && track.vst.plugin) && !track.hw)
+  // A recorded part is summed in as samples; the SoundFont engine has nothing
+  // to play for it, so it must not be handed to the synth (and must not take a channel).
+  const playable = compiled.tracks.filter((track) => !(track.vst && track.vst.plugin) && !track.hw && !track.audio)
   const tracks = onlyTrack ? playable.filter((track) => track.name === onlyTrack) : playable
   if (onlyTrack && tracks.length === 0) {
     if (compiled.tracks.some((track) => track.name === onlyTrack && track.vst && track.vst.plugin)) {

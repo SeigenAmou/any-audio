@@ -24,3 +24,6 @@ docs/*.md
 dsh-image-gen/
 output
 .tmp-*
+
+# The GUI host is built separately; ship the source, not the 6.5 MB binary.
+bin/vst-gui-host/*.exe

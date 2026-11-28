@@ -16,6 +16,7 @@ import { peakOf, parseWav, rmsOf, toDb } from './wav.js'
 import { renderCompiled } from './synth.js'
 import { isVst2Plugin, renderVst, renderVst2, renderVstBatch } from './vst-host.js'
 import { renderHwTracks } from './hw-track.js'
+import { renderAudioTracks } from './audio-track.js'
 import { encodeMidiFile } from './midi-file.js'
 
 /** A VST part is rendered one plugin process at a time; 20k notes is already
@@ -346,13 +347,17 @@ export async function renderMixWithParts(compiled, {
       normalize: false,
     })
     : null
+  // Recorded parts: a wav is read and scaled, no subprocess involved. It joins
+  // the same sum as everything else so one master gain still covers the score.
+  const recorded = await renderAudioTracks(compiled, { sampleRate: rate, durationSec: total })
   const channels = emptyPair(frames)
   for (let ch = 0; ch < 2; ch++) {
     const fromFont = soundfont?.channels[ch]
     const fromVst = vst?.channels[ch]
     const fromHw = hw?.channels[ch]
+    const fromAudio = recorded?.mixed?.[ch]
     for (let i = 0; i < frames; i++) {
-      channels[ch][i] = (fromFont?.[i] ?? 0) + (fromVst?.[i] ?? 0) + (fromHw?.[i] ?? 0)
+      channels[ch][i] = (fromFont?.[i] ?? 0) + (fromVst?.[i] ?? 0) + (fromHw?.[i] ?? 0) + (fromAudio?.[i] ?? 0)
     }
   }
   const gain = normalize ? normalise(channels, peakDb) : { appliedGain: 1, peakBeforeDb: toDb(peakOf(channels)) }
@@ -370,6 +375,8 @@ export async function renderMixWithParts(compiled, {
     voices: soundfont?.voices ?? 0,
     vstParts: vst?.parts ?? [],
     vstErrors: vst?.errors ?? [],
+    audioParts: recorded?.parts ?? [],
+    audioErrors: recorded?.errors ?? [],
     hwParts: hw?.parts ?? [],
     hwErrors: hw?.errors ?? [],
   }

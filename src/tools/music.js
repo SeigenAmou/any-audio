@@ -16,6 +16,7 @@ import { renderMixWithParts, renderVstStem, vstTracksOf } from '../audio/vst-tra
 import { hwTracksOf, renderHwStem } from '../audio/hw-track.js'
 import { resolveScorePresets } from '../audio/vst-preset.js'
 import { partTarget, rollText } from '../audio/track-view.js'
+import { audioTracksOf, loadAudioPart } from '../audio/audio-track.js'
 import { readConfig } from '../config.js'
 import { attachMaterialFile } from '../project/attach.js'
 import { projectDir } from '../project/paths.js'
@@ -89,6 +90,25 @@ function sliceScoreByBars(score, parsed, { bars, pad = 0, beatsPerBar = 4 }) {
     tracks,
     durationSec: Number((t1 - t0).toFixed(6)),
     bars: { from: first, to: last, beatPerBar: beatsPerBar, notes: kept },
+  }
+}
+
+/**
+ * A recorded part points at a file. A path written in the score is taken as the
+ * person wrote it: relative to the workspace, like every other file argument.
+ * Absolute paths pass through unchanged.
+ */
+function resolveAudioPaths(score, workspaceRoot) {
+  const tracks = Array.isArray(score?.tracks) ? score.tracks : []
+  if (!tracks.some((track) => track?.audio && typeof track.audio === 'object' && typeof track.audio.path === 'string')) return score
+  return {
+    ...score,
+    tracks: tracks.map((track) => {
+      const spec = track?.audio
+      if (!spec || typeof spec !== 'object' || typeof spec.path !== 'string') return track
+      const path = isAbsolute(spec.path) ? spec.path : resolve(workspaceRoot, spec.path)
+      return { ...track, audio: { ...spec, path } }
+    }),
   }
 }
 
@@ -601,7 +621,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
     // A track may point at a saved patch instead of repeating a plugin path and
     // two hundred parameter values. Resolution is async, so it happens here and
     // not inside compileScore.
-    const score = await resolveScorePresets(rawScore)
+    const score = resolveAudioPaths(await resolveScorePresets(rawScore), workspaceRoot)
     const sampleRate = Math.round(clampSeconds(args.sampleRate ?? config.music.sampleRate, config.music.sampleRate)) || config.music.sampleRate
     const compiled = compileScore(score, { sampleRate, externals: config.sources?.external ?? [] })
     // VST3 tracks leave the SoundFont planner: the sidecar renders them, and the
@@ -636,7 +656,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
         const last = notes.length ? Math.max(...notes.map((note) => note.start + note.duration)) : null
         return {
           name: track.name,
-          kind: track.vst3 ? 'vst3' : track.vst ? 'vst' : track.hw ? 'hw' : track.midi ? 'midi' : 'font',
+          kind: track.vst3 ? 'vst3' : track.vst ? 'vst' : track.hw ? 'hw' : track.midi ? 'midi' : track.audio ? 'audio' : 'font',
           notes: notes.length,
           firstNoteSec: first,
           lastNoteSec: last,
@@ -690,6 +710,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
     const makeVstScratch = () => scratchPath(workspaceRoot, `vst-${nowStamp()}-${vstScratch++}.wav`)
     const vstParts = vstTracksOf(compiled)
     const hwParts = hwTracksOf(compiled)
+    const audioParts = audioTracksOf(compiled)
     // A stems render would otherwise play every hardware module twice — once for
     // the mix, once for the stem — and on a long score that second recording is
     // the one that comes back empty. The mix pass keeps its capture and the stem
@@ -699,7 +720,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
     // VST3 sidecar, our own plugin/hardware parts, or a plain SoundFont render.
     const rendered = vst3Tracks.length > 0
       ? await renderMixedScore({ compiled, sf2Compiled, plan, vst3Tracks, sampleRate, durationSec, peakDb, normalize, workspaceRoot })
-      : (vstParts.length > 0 || hwParts.length > 0)
+      : (vstParts.length > 0 || hwParts.length > 0 || audioParts.length > 0)
         ? await renderMixWithParts(compiled, {
           soundFontOptions: { banks: plan.banks, layout: plan.layout },
           sampleRate,
@@ -767,7 +788,7 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
     const projectRel = relativeToWorkspace(workspaceRoot, projectDir(workspaceRoot, projectId))
     const { levels } = await eachTrackStem(compiled, {
       gain,
-      renderOne: (track) => {
+      renderOne: async (track) => {
         if (track.vst3) {
           // The mix pass already rendered this stem; reuse it instead of paying
           // for a second VST3 render just to measure it.
@@ -779,6 +800,10 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
             Float32Array.from(stem.channels[1], (sample) => sample * trackGain * right),
           ]
           return { channels, peakDb: toDb(peakOf(channels)), rmsDb: toDb(rmsOf(channels)) }
+        }
+        if (track.audio) {
+          const part = await loadAudioPart(track, { sampleRate, durationSec })
+          return { channels: part.channels, peakDb: toDb(peakOf(part.channels)), rmsDb: toDb(rmsOf(part.channels)) }
         }
         if (track.vst) return renderVstStem(track, { sampleRate, durationSec, out: makeVstScratch() })
         if (track.hw) {
@@ -882,7 +907,10 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
         // looking at the wrong thing.
         instrument: track.vst
           ? `vst: ${basename(track.vst.plugin)}`
-          : track.hw ? `hw: ${track.hw.port}` : track.midi ? `midi: ${track.midi.port} (output only)` : track.instrument,
+          : track.hw ? `hw: ${track.hw.port}`
+            : track.midi ? `midi: ${track.midi.port} (output only)`
+              : track.audio ? `audio: ${basename(track.audio.path)}`
+                : track.instrument,
         program: vst3 ? null : assignment?.program ?? track.program,
         // The bank the render actually used: an object-form instrument names a
         // patch outside bank 0, and the reply has to show which one was loaded
@@ -909,6 +937,9 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
     if (defaultNote) warnings.push(defaultNote)
     for (const failure of rendered.vstErrors ?? []) {
       warnings.push(`the plugin part "${failure.name}" (${basename(failure.plugin)}) did not render — ${failure.message}. The rest of the score was mixed without it.`)
+    }
+    for (const failure of rendered.audioErrors ?? []) {
+      warnings.push(`the recorded part "${failure.name}" did not load — ${failure.error}. The rest of the score was mixed without it.`)
     }
     for (const failure of rendered.hwErrors ?? []) {
       warnings.push(`the hardware part "${failure.name}" on "${failure.port}" did not record — ${failure.message}. The rest of the score was mixed without it.`)
