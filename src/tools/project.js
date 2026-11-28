@@ -17,6 +17,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { contentEndSec, LIMITS, TRACK_CATEGORIES, MATERIAL_KINDS, validateFxChain } from '../project/schema.js'
+import { barToSeconds, buildTempoMap, DEFAULT_BPM, DEFAULT_METER } from '../audio/tempo.js'
 import { createProject, listProjects, readDraft, readMaterialIndex, readProject, saveProject, writeMaterialIndex } from '../project/store.js'
 import { ensureMaterialLevels, findMaterial, registerMaterial, deleteMaterial, referencesFor } from '../project/materials.js'
 import { importFile, importGeneratedMaterial } from '../project/import.js'
@@ -28,6 +29,22 @@ import { readConfig } from '../config.js'
 import { providerInfo, voiceDisplayName } from '../audio/tts-providers.js'
 
 const MODES = ['create', 'add_material', 'place', 'read', 'update', 'render']
+
+/**
+ * A clip time written as a bar position: "3:1:1:0" or "12.2" (bar.beat).
+ * Resolved against the project's own tempo, so moving the tempo afterwards
+ * leaves the clip where it is — clips store seconds.
+ */
+function barTime(project, value, where) {
+  const parts = String(value).trim().split(/[:.\s]+/).filter(Boolean).map(Number)
+  if (parts.length === 0 || parts.some((part) => !Number.isFinite(part))) {
+    throw new Error(`${where}: "${value}" is not a bar position like "3:1:1:0" or "12.2"`)
+  }
+  const tempo = project.tempo ?? { bpm: DEFAULT_BPM, meter: DEFAULT_METER }
+  const map = buildTempoMap([{ bar: 1, bpm: tempo.bpm, meter: tempo.meter }])
+  const [bar = 1, beat = 1, sixteenth = 1, tick = 0] = parts
+  return barToSeconds(map, bar, beat, sixteenth, tick)
+}
 
 /**
  * The narration engine and voice the person picked in Settings → AnyAudio.
@@ -95,6 +112,7 @@ async function projectSummary(workspaceRoot, project) {
     ...(draft ? { draft: true } : {}),
     folder: relativeToWorkspace(workspaceRoot, projectDir(workspaceRoot, project.id)),
     masterFaderDb: project.masterFaderDb,
+    ...(project.tempo ? { tempo: project.tempo } : {}),
     ...(project.masterFx?.length ? { masterFx: project.masterFx } : {}),
     tracks: project.tracks.map((track) => ({
       id: track.id,
@@ -267,6 +285,7 @@ function applyUpdate(project, { target, trackId, clipId, field, value }) {
 
   switch (field) {
     case 'startSec': clip.startSec = Number(value); break
+    case 'startBar': clip.startSec = barTime(project, value, 'startBar'); break
     case 'inSec': clip.inSec = Number(value); break
     case 'outSec': clip.outSec = Number(value); break
     case 'gainDb': clip.gainDb = Number(value); break
@@ -294,6 +313,7 @@ async function runCreate(workspaceRoot, args) {
   const project = await createProject(workspaceRoot, {
     name: args.name,
     sampleRate: Number(args.sampleRate) || 48000,
+    tempo: args.tempo,
     by: 'agent',
     note: args.note || '创建工程',
   })
@@ -364,7 +384,7 @@ async function runAddMaterial(workspaceRoot, args, exec) {
       || (material.kind === 'video-audio' ? 'video-audio' : kind === 'tts' ? 'tts' : kind === 'music' ? 'music' : 'other')
     const track = ensureTrack(reloaded, { name: trackName, category })
     clip = placeClip(track, material, {
-      startSec: args.startSec,
+      startSec: args.startBar !== undefined ? barTime(reloaded, args.startBar, 'startBar') : args.startSec,
       inSec: args.inSec,
       outSec: args.outSec,
       gainDb: args.gainDb,
@@ -442,7 +462,7 @@ async function runPlace(workspaceRoot, args, exec) {
     const track = ensureTrack(project, { name: trackName, category: item.category || args.category || 'other' })
     const fallbackStart = lastOnTrack.get(track.id) ?? 0
     const clip = placeClip(track, material, {
-      startSec: item.startSec ?? fallbackStart,
+      startSec: item.startBar !== undefined ? barTime(project, item.startBar, `items[${index}].startBar`) : (item.startSec ?? fallbackStart),
       inSec: item.inSec,
       outSec: item.outSec,
       gainDb: item.gainDb,
@@ -600,6 +620,7 @@ export const projectToolDefinition = finalizeTool({
       projectId: { type: 'string', description: 'The project id. Required for every mode except create, and optional for read (omit to list projects).' },
       name: { type: 'string', description: 'create: the project name.' },
       sampleRate: { type: 'number', description: 'create: internal sample rate, default 48000.' },
+      tempo: { type: 'object', description: 'create: the metre clip times are counted in when startBar is used, like {bpm: 120, meter: [4, 4]}.' },
       note: { type: 'string', description: 'A short human sentence recorded in the project history.' },
       sourcePath: { type: 'string', description: 'add_material: the file to move into the project, relative to the workspace or absolute.' },
       kind: {
@@ -610,6 +631,7 @@ export const projectToolDefinition = finalizeTool({
       trackName: { type: 'string', description: 'add_material: the track to place this clip on; created when it does not exist. Omit to only register the material.' },
       category: { type: 'string', enum: TRACK_CATEGORIES, description: 'add_material: the track category when the track is created.' },
       startSec: { type: 'number', description: 'add_material: where the clip starts on the timeline, default 0.' },
+      startBar: { type: 'string', description: 'add_material: where the clip starts, written as a bar position ("3:1:1:0" or "12.2") instead of startSec. Resolved against the project\'s tempo.' },
       inSec: { type: 'number', description: 'add_material: the in point within the material, default 0.' },
       outSec: { type: 'number', description: 'add_material: the out point within the material, default the whole material.' },
       gainDb: { type: 'number', description: 'add_material: clip gain in dB.' },
@@ -627,6 +649,7 @@ export const projectToolDefinition = finalizeTool({
             path: { type: 'string', description: 'A file to import and place, relative to the workspace or absolute.' },
             trackName: { type: 'string', description: 'The track this clip belongs on; created when it does not exist.' },
             startSec: { type: 'number', description: 'Where the clip starts; omit to continue after the previous clip on the same track.' },
+            startBar: { type: 'string', description: 'Where the clip starts, as a bar position like "3:1:1:0" instead of startSec.' },
             inSec: { type: 'number', description: 'The in point within the material.' },
             outSec: { type: 'number', description: 'The out point within the material.' },
             gainDb: { type: 'number', description: 'Clip gain in dB.' },

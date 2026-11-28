@@ -58,14 +58,14 @@ export function emptyMaterialIndex() {
  * `name` is a display title; the folder uses the generated id so renaming a
  * project never moves files on disk.
  */
-export async function createProject(workspaceRoot, { name, id, sampleRate = 48000, by = 'agent', note = 'created' } = {}) {
+export async function createProject(workspaceRoot, { name, id, sampleRate = 48000, tempo = null, by = 'agent', note = 'created' } = {}) {
   if (!workspaceRoot) throw new ProjectStoreError('a workspace root is required to create a project')
   const projectId = id ? safeName(id, 'prj') : newProjectId()
   const dir = projectDirOf(workspaceRoot, projectId)
   if (existsSync(dir)) throw new ProjectStoreError(`project "${projectId}" already exists at ${dir}`)
   const title = typeof name === 'string' && name.trim() ? name.trim() : projectId
 
-  const project = emptyProject({ id: projectId, name: title, sampleRate })
+  const project = emptyProject({ id: projectId, name: title, sampleRate, tempo })
   project.history = [{ at: project.createdAt, by, note }]
   validateProject(project)
 

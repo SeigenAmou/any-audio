@@ -140,7 +140,7 @@ export function defaultItem(id, material) {
     label: '',
     fx: [],
   }
-}export function emptyProject({ id, name, sampleRate = 48000, createdAt = nowIso() } = {}) {
+}export function emptyProject({ id, name, sampleRate = 48000, tempo = null, createdAt = nowIso() } = {}) {
   return {
     schemaVersion: SCHEMA_VERSION,
     id,
@@ -152,6 +152,7 @@ export function defaultItem(id, material) {
     // still 0: once measured and frozen, a later change has no effect (spec §10.2).
     exportPeakDb: -1.5,
     masterFaderDb: 0,
+    ...(tempo ? { tempo } : {}),
     // The bus chain: applied after normalizeGainDb + masterFaderDb, never before
     // (see render.js — a limiter that ran first would be undone by the fader).
     masterFx: [],
@@ -270,6 +271,17 @@ export function validateProject(project) {
   if (!Number.isInteger(project.sampleRate)) fail('project.sampleRate must be an integer')
   number(project.normalizeGainDb, 'project.normalizeGainDb', { min: -120, max: 120 })
   number(project.masterFaderDb, 'project.masterFaderDb', { min: -120, max: 120 })
+  // The metre the clip timeline is counted in. It does not move anything
+  // already placed (clips store seconds); it is what "bar 3" resolves against
+  // when a clip is placed by bar instead of by second.
+  if (project.tempo !== undefined) {
+    if (!isPlainObject(project.tempo)) fail('project.tempo must be an object like {bpm: 120, meter: [4, 4]}')
+    number(project.tempo.bpm, 'project.tempo.bpm', { min: 20, max: 400 })
+    const meter = project.tempo.meter
+    if (!Array.isArray(meter) || meter.length !== 2) fail('project.tempo.meter must be a pair like [4, 4]')
+    number(meter[0], 'project.tempo.meter[0]', { min: 1, max: 32 })
+    number(meter[1], 'project.tempo.meter[1]', { min: 1, max: 32 })
+  }
   number(project.exportPeakDb, 'project.exportPeakDb', { min: -24, max: 0 })
   timestamp(project.createdAt, 'project.createdAt')
   timestamp(project.modifiedAt, 'project.modifiedAt')
