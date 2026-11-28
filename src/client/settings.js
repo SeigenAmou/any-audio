@@ -2155,6 +2155,63 @@ function FxLibTab({ state, reload, notify }) {
   )
 }
 
+/**
+ * What this person sees, not what the agent may do.
+ *
+ * The agent always has the whole tool set — the bus, the second mixing stage,
+ * the render knobs. These switches only decide whether those controls appear in
+ * this interface: the default is the beginner view, pro mode adds the mixing
+ * panels, full control adds the render parameters. Nothing here changes what a
+ * render is allowed to do, and the agent must never flip them on its own.
+ */
+function SettingsTab({ state, reload, notify }) {
+  const [busy, setBusy] = useState('')
+  const ui = state?.config?.ui ?? {}
+  const proMode = ui.proMode === true
+  const fullControl = ui.fullControl === true
+  const toggle = useCallback(async (field, next) => {
+    setBusy(field)
+    try {
+      await api('/config', { method: 'POST', body: { patch: { ui: { [field]: next } } } })
+      await reload()
+      notify(t('已保存'))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }, [notify, reload])
+  const level = fullControl ? t('完全控制') : proMode ? t('专业模式') : t('新手')
+  return h('div', { style: { display: 'grid', gap: 12 } },
+    h(Card, {
+      title: t('界面层级'),
+      desc: t('这里控制的是你自己的入口，不是 Agent 的能力——它始终拥有全部工具。默认只显示新手的那一层。'),
+    },
+      h('div', { style: { ...S.row, gap: 10 } },
+        h(Switch, {
+          checked: proMode,
+          onChange: (next) => toggle('proMode', next),
+          label: t('专业模式'),
+          title: t('显示总线、二次混音、多效果与 VST 效果器面板'),
+        }),
+        h('span', { style: S.desc }, t('总线、二次混音、多效果、VST 效果器面板'))),
+      h('div', { style: { ...S.row, gap: 10 } },
+        h(Switch, {
+          checked: fullControl,
+          onChange: (next) => toggle('fullControl', next),
+          label: t('完全控制'),
+          title: t('再把渲染参数交给你：峰值、归一化、轨道上限'),
+        }),
+        h('span', { style: S.desc }, t('渲染参数：峰值、归一化、轨道上限'))),
+      h('div', { style: S.desc }, t('当前：{0}', level) + (busy ? ' ' + t('保存中…') : '')),
+    ),
+    h(Card, {
+      title: t('这一层之后是什么'),
+      desc: t('专业模式接上总线与效果器面板；完全控制把渲染参数交出来。两者都不改变渲染能做什么，只改变你能看到多少。'),
+    }),
+  )
+}
+
 function AdvancedTab({ state, reload, notify }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState('')
@@ -2261,6 +2318,7 @@ function Page() {
     { id: 'singing', label: t('唱歌'), render: () => h(SingingTab, { state, reload, notify }) },
     { id: 'mix', label: t('混音'), render: () => h(MixTab, { state, reload, notify }) },
     { id: 'advanced', label: t('高级'), render: () => h(AdvancedTab, { state, reload, notify }) },
+    { id: 'settings', label: t('设置'), render: () => h(SettingsTab, { state, reload, notify }) },
   ]), [state, reload, notify])
 
   if (error) {

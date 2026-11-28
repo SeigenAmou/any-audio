@@ -9,6 +9,9 @@
  * which keeps every call site readable in the language actually being written.
  */
 export const EN = {
+  '说明书文件或文件夹，如 D:\\manuals\\SD-20.pdf': 'manual file or folder, e.g.  D:\\manuals\\SD-20.pdf',
+  '预设文件路径，如 C:\\…\\MyStrings.vstpreset 或 .fxp': 'preset file path, e.g.  C:\\…\\MyStrings.vstpreset 或 .fxp',
+  '本地文件：D:\…\配器表.xlsx': 'local file: D:\…\配器表.xlsx',
 
   '例如 D:\\\\VST3': 'e.g. D:\\VST3',
   '表名，例如 Studio Orchestra': 'Table name, e.g. Studio Orchestra',
