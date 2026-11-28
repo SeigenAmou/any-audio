@@ -2167,6 +2167,22 @@ function FxLibTab({ state, reload, notify }) {
 function SettingsTab({ state, reload, notify }) {
   const [busy, setBusy] = useState('')
   const ui = state?.config?.ui ?? {}
+  const currentDir = state?.platform?.dataDir ?? ''
+  const [dataDir, setDataDir] = useState(currentDir)
+  useEffect(() => { setDataDir(currentDir) }, [currentDir])
+  const dirtyHome = dataDir.trim() !== '' && dataDir.trim() !== currentDir
+  const saveHome = useCallback(async () => {
+    setBusy('home')
+    try {
+      await api('/config', { method: 'POST', body: { patch: { ui: { home: dataDir.trim() } } } })
+      await reload()
+      notify(t('已保存，重启 DSH 后生效'))
+    } catch (error) {
+      notify(error.message, 'error')
+    } finally {
+      setBusy('')
+    }
+  }, [dataDir, notify, reload])
   const proMode = ui.proMode === true
   const fullControl = ui.fullControl === true
   const toggle = useCallback(async (field, next) => {
@@ -2205,6 +2221,14 @@ function SettingsTab({ state, reload, notify }) {
         h('span', { style: S.desc }, t('渲染参数：峰值、归一化、轨道上限'))),
       h('div', { style: S.desc }, t('当前：{0}', level) + (busy ? ' ' + t('保存中…') : '')),
     ),
+    h(Card, {
+      title: t('数据目录'),
+      desc: t('音源、声库、风格卡、说明书和工程缓存都放在这里。换目录要重启 DSH 才生效，旧目录里的文件不会自动搬过去。'),
+    },
+      h('div', { style: { ...S.row, gap: 8 } },
+        h(TextInput, { value: dataDir, onChange: setDataDir, placeholder: t('例如 E:\\anyaudio-data') }),
+        h(Btn, { disabled: busy === 'home' || !dirtyHome, onClick: saveHome }, busy === 'home' ? t('保存中…') : t('保存目录'))),
+      h('div', { style: S.desc }, t('当前生效：{0}', currentDir) + (dirtyHome ? ' · ' + t('重启 DSH 后切换') : ''))),
     h(Card, {
       title: t('这一层之后是什么'),
       desc: t('专业模式接上总线与效果器面板；完全控制把渲染参数交出来。两者都不改变渲染能做什么，只改变你能看到多少。'),

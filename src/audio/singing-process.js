@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { anyaudioHome } from '../audio/home.js'
+import { anyaudioRoot } from '../audio/home.js'
 import { fileURLToPath } from 'node:url'
 
 export const DEFAULT_IDLE_SEC = 60
@@ -59,7 +59,7 @@ function envPath(name) {
  *  for the real python/voicebank/worker are skipped. */
 export function resolveSingingConfig(options = {}) {
   const injected = Boolean(options.command || options.args)
-  const root = envPath('ANYAUDIO_SINGING_DIR') ?? join(anyaudioHome(), 'singing')
+  const root = envPath('ANYAUDIO_SINGING_DIR') ?? join(anyaudioRoot(), 'singing')
   const requestedBank = options.voicebank
     ?? (process.env.ANYAUDIO_SINGING_VOICEBANK || DEFAULT_VOICEBANK)
   // Settings/config store a bare voicebank NAME, not a path. Resolve a bare name

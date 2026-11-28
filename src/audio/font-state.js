@@ -1,6 +1,6 @@
 import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { anyaudioHome } from '../audio/home.js'
+import { anyaudioRoot } from '../audio/home.js'
 import { homedir } from 'node:os'
 import { basename } from 'node:path'
 
@@ -22,7 +22,7 @@ export function statePath() {
   if (explicit && explicit.trim()) return resolve(explicit.trim())
   const override = process.env.ANYAUDIO_CONFIG
   if (override && override.trim()) return join(dirname(override.trim()), 'state.json')
-  return join(anyaudioHome(), 'state.json')
+  return join(anyaudioRoot(), 'state.json')
 }
 
 function emptyState() {

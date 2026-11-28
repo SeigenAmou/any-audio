@@ -651,6 +651,13 @@ export const EN = {
   '回声；反馈决定衰减': 'Echo; feedback sets how quickly it dies away',
   '旁白出现时压低这条': 'Pulls this down whenever the narration speaks',
   '变速/变调；与导出一致': 'Rate and pitch; matches what the export renders',
+  '数据目录': 'Data directory',
+  '音源、声库、风格卡、说明书和工程缓存都放在这里。换目录要重启 DSH 才生效，旧目录里的文件不会自动搬过去。': 'Instruments, voices, style cards, manuals and project cache live here. A new directory takes effect after DSH restarts, and files in the old one are not moved.',
+  '例如 E:\\anyaudio-data': 'e.g. E:\\anyaudio-data',
+  '保存目录': 'Save directory',
+  '已保存，重启 DSH 后生效': 'Saved; takes effect after DSH restarts',
+  '当前生效：{0}': 'Active: {0}',
+  '重启 DSH 后切换': 'switches after a DSH restart',
 }
 
 // Start from the system language so the first frame is already right; the

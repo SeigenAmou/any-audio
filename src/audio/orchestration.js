@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { homedir } from 'node:os'
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
-import { anyaudioHome } from '../audio/home.js'
+import { anyaudioRoot } from '../audio/home.js'
 import { promisify } from 'node:util'
 
 export const ORCHESTRATION_SCHEMA = 1
@@ -21,7 +21,7 @@ const MAX_ROWS = 20000
 
 export function orchestrationDir() {
   const base = process.env.ANYAUDIO_ORCHESTRATIONS
-  return base && base.trim() ? base.trim() : join(anyaudioHome(), 'orchestrations')
+  return base && base.trim() ? base.trim() : join(anyaudioRoot(), 'orchestrations')
 }
 
 export function orchestrationSlug(name) {

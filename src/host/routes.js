@@ -14,6 +14,7 @@ import {
   sha256File,
   userFontDir,
 } from '../audio/fonts.js'
+import { anyaudioRoot } from '../audio/home.js'
 import { deleteFont, describeFonts, forgetFont, updateFontEntry } from '../audio/font-state.js'
 import { resolveConfiguredDefault } from '../audio/banks.js'
 import { categoryOfProgram } from '../audio/scoring.js'
@@ -392,7 +393,7 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
         mimoConfigured,
         deepseekConfigured,
       },
-      platform: { node: process.version, home: homedir(), fontLibrary: userFontDir() },
+      platform: { node: process.version, home: homedir(), fontLibrary: userFontDir(), dataDir: anyaudioRoot() },
     }
   }
 

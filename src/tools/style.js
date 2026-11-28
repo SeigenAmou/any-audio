@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { anyaudioHome } from '../audio/home.js'
+import { anyaudioRoot } from '../audio/home.js'
 import { compileScore } from '../audio/score.js'
 import { parseMidiFile, scoreFromMidi } from '../audio/midi-file.js'
 import { analyzeStyle, describeCard, STYLE_SCHEMA } from '../audio/style.js'
@@ -28,7 +28,7 @@ const STYLE_EXT = '.json'
 const STYLE_MD_EXT = '.md'
 
 function styleDir() {
-  return process.env.ANYAUDIO_STYLE_DIR || join(anyaudioHome(), 'styles')
+  return process.env.ANYAUDIO_STYLE_DIR || join(anyaudioRoot(), 'styles')
 }
 
 function slugOf(text, fallback) {
