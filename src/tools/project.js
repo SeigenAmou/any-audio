@@ -159,12 +159,21 @@ function applyUpdate(project, { target, trackId, clipId, field, value }) {
         project.masterFx = validateFxChain(value, 'masterFx')
         return `设置总线效果链（${describeChain(project.masterFx)}）`
       }
+      case 'exportPeakDb': {
+        const peak = Number(value)
+        if (!Number.isFinite(peak) || peak > 0 || peak < -24) {
+          throw new Error('project field "exportPeakDb" is the peak the first export aims at, in dBFS between -24 and 0; '
+            + 'it is only read while normalizeGainDb is still 0')
+        }
+        project.exportPeakDb = peak
+        return `导出峰值设为 ${peak} dBFS`
+      }
       case 'normalizeGainDb':
         throw new Error(
           'project field "normalizeGainDb" is measured by the renderer, not set: it is fixed the first time the project is exported (spec §10.2), '
           + 'so a manual value would be overwritten anyway. Adjust the mix with masterFaderDb or a clip gainDb instead.',
         )
-      default: throw new Error(`unknown project field "${field}"; use name, masterFaderDb or masterFx`)
+      default: throw new Error(`unknown project field "${field}"; use name, masterFaderDb, masterFx or exportPeakDb`)
     }
   }
 

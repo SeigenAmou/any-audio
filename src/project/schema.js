@@ -148,6 +148,9 @@ export function defaultItem(id, material) {
     sampleRate,
     durationSec: 0,
     normalizeGainDb: 0,
+    // First export peaks the mix here (dBFS). Read only while normalizeGainDb is
+    // still 0: once measured and frozen, a later change has no effect (spec §10.2).
+    exportPeakDb: -1.5,
     masterFaderDb: 0,
     // The bus chain: applied after normalizeGainDb + masterFaderDb, never before
     // (see render.js — a limiter that ran first would be undone by the fader).
@@ -267,6 +270,7 @@ export function validateProject(project) {
   if (!Number.isInteger(project.sampleRate)) fail('project.sampleRate must be an integer')
   number(project.normalizeGainDb, 'project.normalizeGainDb', { min: -120, max: 120 })
   number(project.masterFaderDb, 'project.masterFaderDb', { min: -120, max: 120 })
+  number(project.exportPeakDb, 'project.exportPeakDb', { min: -24, max: 0 })
   timestamp(project.createdAt, 'project.createdAt')
   timestamp(project.modifiedAt, 'project.modifiedAt')
 

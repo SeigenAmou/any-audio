@@ -19,6 +19,7 @@ export function serializeProject(project) {
     durationSec: project.durationSec,
     normalizeGainDb: project.normalizeGainDb,
     masterFaderDb: project.masterFaderDb,
+    exportPeakDb: project.exportPeakDb ?? -1.5,
     // An empty chain is omitted rather than written as []: a project without
     // effects then looks exactly like one written before the field existed, and
     // the diff of a save that only moved a clip stays about the clip.

@@ -371,6 +371,19 @@ export function setMasterFader(project, { masterFaderDb }) {
   return { project: next, note: t('调整总线音量 {0} dB', next.masterFaderDb) }
 }
 
+/** The peak the first export aims at (dBFS). Only read while normalizeGainDb is
+ *  still zero — the renderer measures and freezes that on the first export — so
+ *  the note names the number rather than promising a live level change. */
+export function setExportPeak(project, { exportPeakDb }) {
+  const next = { ...project }
+  const value = Number(exportPeakDb)
+  if (!Number.isFinite(value)) return { project, note: '' }
+  const clamped = Math.min(0, Math.max(-24, Math.round(value * 10) / 10))
+  if (tidy(clamped) === tidy(next.exportPeakDb ?? -1.5)) return { project: next, note: '' }
+  next.exportPeakDb = clamped
+  return { project: next, note: t('导出峰值 {0} dBFS', clamped) }
+}
+
 export function setMasterFx(project, { chain }) {
   const next = clone(project)
   const wanted = assertChain(chain)

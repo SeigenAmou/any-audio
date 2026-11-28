@@ -31,6 +31,13 @@ import { readMaterialIndex, saveProject } from './store.js'
 /** Where an explicit export-time normalisation peaks (spec §10.2). */
 export const EXPORT_NORMALIZE_PEAK_DB = -1.5
 
+/** The peak the first export aims at: the project's own field when it has one,
+ *  otherwise the built-in default. Only consulted while normalizeGainDb is 0. */
+function exportPeakDb(project) {
+  const value = Number(project.exportPeakDb)
+  return Number.isFinite(value) && value <= 0 && value >= -24 ? value : EXPORT_NORMALIZE_PEAK_DB
+}
+
 /**
  * How much silence a clip-mounted reverb or delay gets to decay into.
  *
@@ -321,7 +328,7 @@ export async function transcodeMp3(wavPath, mp3Path, { signal } = {}) {
 async function freezeNormalizeGain(project, workspaceRoot, rendered, signal) {
   if (Number(project.normalizeGainDb) !== 0) return null
   if (!(rendered.peakBeforeGainDb > -Infinity)) return null
-  const normalizeGainDb = Number((EXPORT_NORMALIZE_PEAK_DB - rendered.peakBeforeGainDb).toFixed(2))
+  const normalizeGainDb = Number((exportPeakDb(project) - rendered.peakBeforeGainDb).toFixed(2))
   if (!Number.isFinite(normalizeGainDb)) return null
 
   // Apply the newly measured gain to what is already rendered rather than
@@ -399,11 +406,11 @@ export async function exportProject({
     throwIfAborted(signal)
     const peak = peakOf(rendered.channels)
     if (peak > 0) {
-      const gain = dbToGain(EXPORT_NORMALIZE_PEAK_DB) / peak
+      const gain = dbToGain(exportPeakDb(project)) / peak
       for (const channel of rendered.channels) {
         for (let i = 0; i < channel.length; i++) channel[i] *= gain
       }
-      rendered.normalizedPeakDb = EXPORT_NORMALIZE_PEAK_DB
+      rendered.normalizedPeakDb = exportPeakDb(project)
       rendered.peakDb = Number(toDb(peakOf(rendered.channels)).toFixed(2))
       rendered.rmsDb = Number(toDb(rmsOf(rendered.channels)).toFixed(2))
     }

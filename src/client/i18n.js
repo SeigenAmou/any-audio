@@ -13,7 +13,7 @@ export const EN = {
   '专业模式': 'Pro mode',
   '新手': 'Beginner',
   '界面层级': 'Interface level',
-  '这里控制的是你自己的入口，不是 Agent 的能力——它始终拥有全部工具。默认只显示新手的那一层。': 'This controls your own entry points, not the agent's ability — it always has the full tool set. The default is the beginner layer.',
+  '这里控制的是你自己的入口，不是 Agent 的能力——它始终拥有全部工具。默认只显示新手的那一层。': 'This controls your own entry points, not the agent\'s ability — it always has the full tool set. The default is the beginner layer.',
   '显示总线、二次混音、多效果与 VST 效果器面板': 'Show the bus, the second mixing stage, effects and the VST effect panels',
   '总线、二次混音、多效果、VST 效果器面板': 'bus, second mixing stage, effects, VST effect panels',
   '再把渲染参数交给你：峰值、归一化、轨道上限': 'Hand the render knobs to you as well: peak, normalisation, track limit',

@@ -30,7 +30,7 @@ import {
   moveClip, trimClip, splitClip, deleteClip, duplicateClip,
   setClipGain, setClipPan, setClipFades, setClipMuted, assertWithinLimits,
   renameTrack, setTrackMuted, setTrackSolo, deleteTrack,
-  setClipFx, setMasterFx, setMasterFader,
+  setClipFx, setMasterFx, setMasterFader, setExportPeak,
   EditError,
 } from './edit.js'
 
@@ -334,7 +334,7 @@ function useComposerInset() {
   return inset
 }
 
-function ProjectShell({ root, projectId, onBack, inputActions, useInput }) {
+function ProjectShell({ root, projectId, onBack, inputActions, useInput, ui = {} }) {
   const { status, error, project, materials, dirty, hasDraft, reload, update, undo, redo, save, discard, canUndo, canRedo } = useProject(root, projectId)
   const transport = usePlayback(root, projectId)
   const setTransportProject = transport.setProject
@@ -524,6 +524,9 @@ function ProjectShell({ root, projectId, onBack, inputActions, useInput }) {
         case 'master-fader':
           result = setMasterFader(project, { masterFaderDb: request.masterFaderDb })
           break
+        case 'export-peak':
+          result = setExportPeak(project, { exportPeakDb: request.exportPeakDb })
+          break
         default:
           if (!track || !item) return
           result = applyClipEdit(project, track, item, request, playhead, trackId, itemId)
@@ -569,7 +572,7 @@ function ProjectShell({ root, projectId, onBack, inputActions, useInput }) {
   // lives beside the picture, so one list at a time. Since I-41 a track has no
   // chain of its own — effects live on clips or on the bus — so the only chain
   // that can open here is the bus.
-  const fxEditor = fxTarget === 'master'
+  const fxEditor = fxTarget === 'master' && ui.proMode
     ? { level: 'master', chain: project.masterFx ?? [], title: t('总线效果'), apply: (chain) => applyEdit({ kind: 'master-fx', chain }) }
     : null
 
@@ -633,7 +636,9 @@ function ProjectShell({ root, projectId, onBack, inputActions, useInput }) {
       // because the two act on the whole mix, and it stays a slider rather than a
       // number box so it can be pulled while the transport runs — the head of a
       // track carries the same control, and the two behave identically.
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, width: 180, alignSelf: 'center' } },
+      // Pro mode only: a beginner mixes by moving clips and their gains, and a
+      // bus fader is exactly the control that teaches the wrong lesson first.
+      ui.proMode ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, width: 180, alignSelf: 'center' } },
         h('span', { style: { ...S.mono, fontSize: 10, minWidth: 62, whiteSpace: 'nowrap' } },
           `${t('总线音量')} ${faderDb} dB`,
         ),
@@ -645,15 +650,15 @@ function ProjectShell({ root, projectId, onBack, inputActions, useInput }) {
           title: t('总线音量：整条混音的推子，作用在总线效果之前'),
           onChange: (value) => applyEdit({ kind: 'master-fader', masterFaderDb: value }),
         }),
-      ),
+      ) : null,
       // The bus chain is one control, so it carries one plain title: a round
       // question mark beside a button whose label already says "bus" was noise
       // the person asked to remove (2026-11-10).
-      h(Btn, {
+      ui.proMode ? h(Btn, {
         onClick: () => setFxTarget(fxTarget === 'master' ? null : 'master'),
         kind: fxTarget === 'master' ? 'primary' : undefined,
         title: t('总线效果：作用在母带推子之后的整条混音上'),
-      }, t('总线')),
+      }, t('总线')) : null,
       h(Btn, { onClick: undo, disabled: !canUndo, title: 'Ctrl+Z' }, t('撤销')),
       h(Btn, { onClick: redo, disabled: !canRedo, title: 'Ctrl+Shift+Z' }, t('重做')),
       h('span', { style: { width: 8 } }),
@@ -666,11 +671,24 @@ function ProjectShell({ root, projectId, onBack, inputActions, useInput }) {
               onChange: setExportFormat,
               options: formats.map((format) => ({ value: format, label: format.toUpperCase() })),
             })),
-          h(Switch, {
+          ui.fullControl ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, width: 190, alignSelf: 'center' } },
+            h('span', { style: { ...S.mono, fontSize: 10, minWidth: 88, whiteSpace: 'nowrap' } },
+              `${t('导出峰值')} ${Number(project.exportPeakDb ?? -1.5).toFixed(1)} dBFS`,
+            ),
+            h(Slider, {
+              min: -24,
+              max: 0,
+              step: 0.5,
+              value: Number(project.exportPeakDb ?? -1.5),
+              title: t('首次导出把混音推到多高（-24 到 0 dBFS）。归一化之后这个值不再生效：混音电平以第一次导出为准。'),
+              onChange: (value) => applyEdit({ kind: 'export-peak', exportPeakDb: value }),
+            }),
+          ) : null,
+          ui.fullControl ? h(Switch, {
             checked: exportNormalize,
             onChange: setExportNormalize,
             label: t('导出时归一化'),
-          }),
+          }) : null,
           h(Btn, {
             onClick: () => void exporter.start(chosenFormat, { normalize: exportNormalize }),
             kind: 'primary',
@@ -911,6 +929,10 @@ export function ClipBayPanel({ useWorkspaces, sessionId, inputActions, useInput,
   // repaint: without it an English user could be left on the first frame's
   // Chinese for the whole visit (2026-11-10).
   const [preference, setPreference] = useState(null)
+  // The interface level decides which controls exist for the person, never for
+  // the Agent: a beginner sees the arrangement and the transport, pro mode adds
+  // the bus, full control adds the render knobs. The Agent keeps every tool.
+  const [ui, setUi] = useState({ proMode: false, fullControl: false })
   const [, setLangTick] = useState(0)
   // One way in for every language change: adopt it, tell the document, repaint.
   const adoptLanguage = (next) => {
@@ -933,7 +955,9 @@ export function ClipBayPanel({ useWorkspaces, sessionId, inputActions, useInput,
     api('/state')
       .then((data) => {
         if (cancelled) return
-        const value = setLanguagePreference(data.config?.ui?.language || 'auto')
+        const level = data.config?.ui ?? {}
+        setUi({ proMode: level.proMode === true, fullControl: level.fullControl === true })
+        const value = setLanguagePreference(level.language || 'auto')
         setPreference(value)
         adoptLanguage(detectLanguage(data.config))
       })
@@ -983,6 +1007,7 @@ export function ClipBayPanel({ useWorkspaces, sessionId, inputActions, useInput,
       onBack: () => setOpened(null),
       inputActions,
       useInput,
+      ui,
     })
   }
   return h(ProjectList, { root: workspace.path, onOpen: setOpened })
