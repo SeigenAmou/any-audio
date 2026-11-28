@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
@@ -138,6 +139,16 @@ function formatTimbres(entry, kind) {
   return `${head} — ${shown.join(' · ')}`
 }
 
+/** A custom bank's id is its file name lowercased and stripped of punctuation, exactly
+ *  what banks.js does when it loads the library. The list has to show that string, or
+ *  the score the hint teaches will not resolve. */
+function sanitizeFontId(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'font'
+}
 function formatWriteHint(entry, kind) {
   if (!entry.timbres?.length) {
     return kind === 'sf2'
@@ -270,6 +281,12 @@ export const sourcesToolDefinition = finalizeTool({
           lines.push(`  音色: ${formatTimbres(font, 'sf2')}`)
         }
         for (const entry of value.vst3) {
+          if (!existsSync(entry.plugin)) {
+            // Listing a plugin that is not on disk teaches a score that silently
+            // falls back to a SoundFont (test-compose 2026-11-28). Say so here.
+            lines.push(`- [VST3] ${entry.id} — ${entry.name}（未安装，不可用；写了会回退到 SoundFont）`)
+            continue
+          }
           const vendor = entry.vendor && entry.vendor !== '未知' ? `（${entry.vendor}）` : ''
           const range = entry.range ? `，实测音域 MIDI ${entry.range.low}-${entry.range.high}` : '，音域未实测'
           lines.push(`- [VST3] ${entry.id} — ${entry.name}${vendor}${range}`)
@@ -513,7 +530,7 @@ export const sourcesToolDefinition = finalizeTool({
         relativePath: relativeToWorkspace(workspaceRoot, font.path),
         // A custom bank has no catalog id; its file name is what the score's
         // `source` resolves against, so that is the id the list must show.
-        id: recommended?.id ?? font.name,
+        id: recommended?.id ?? sanitizeFontId(font.name),
         vendor: info.vendor,
         recommended: Boolean(recommended),
         default: Boolean(recommended?.default),
