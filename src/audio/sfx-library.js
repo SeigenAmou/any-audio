@@ -14,6 +14,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { anyaudioHome } from '../audio/home.js'
 import { normalizeManifest, SfxManifestError, validatePackId } from './sfx-manifest.js'
 
 export class SfxLibraryError extends Error {
@@ -30,7 +31,7 @@ export class SfxLibraryError extends Error {
 export function userSfxDir() {
   const override = process.env.ANYAUDIO_SFX_DIR
   if (override && override.trim()) return resolve(override.trim())
-  return join(homedir(), '.dsh', 'anyaudio', 'sfx')
+  return join(anyaudioHome(), 'sfx')
 }
 
 async function readManifestFile(dir) {

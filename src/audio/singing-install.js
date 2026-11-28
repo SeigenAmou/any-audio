@@ -27,6 +27,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, open, readdir, rename, rm, stat } from 'node:fs/promises'
 import { homedir, platform, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { anyaudioHome } from '../audio/home.js'
 
 const GITHUB = 'https://github.com'
 const PROXIES = ['https://gh-proxy.com/', 'https://ghproxy.net/']
@@ -106,7 +107,7 @@ export function stagedVocoderPath(options = {}) {
 export function singingRoot(options = {}) {
   const fromEnv = process.env.ANYAUDIO_SINGING_DIR
   const root = options.root ?? (fromEnv && fromEnv.trim() ? fromEnv.trim() : null)
-    ?? join(homedir(), '.dsh', 'anyaudio', 'singing')
+    ?? join(anyaudioHome(), 'singing')
   return resolve(root)
 }
 

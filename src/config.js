@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { anyaudioHome } from './audio/home.js'
 
 /**
  * One config file per machine, shared by every DSH profile. DSH's own settings
@@ -105,7 +106,7 @@ export { EDGE_VOICES }
 export function configPath() {
   const override = process.env.ANYAUDIO_CONFIG
   if (override && override.trim()) return join(override.trim())
-  return join(homedir(), '.dsh', 'anyaudio', 'config.json')
+  return join(anyaudioHome(), 'config.json')
 }
 
 function isPlainObject(value) {

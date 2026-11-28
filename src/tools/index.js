@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { anyaudioHome } from '../audio/home.js'
 
 import { registerMidiTool } from './midi.js'
 import { registerMidioutTool } from './midiout.js'
@@ -47,7 +48,7 @@ export function registerAllTools(ctx, log = () => {}) {
 
 /** Where the last registration failures are written; shared by every session. */
 export function registrationFailurePath() {
-  return join(homedir(), '.dsh', 'anyaudio', 'tool-register.log')
+  return join(anyaudioHome(), 'tool-register.log')
 }
 
 function noteRegistrationFailure(name, message, error) {

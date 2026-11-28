@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { copyFile, mkdir, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, delimiter, extname, join, resolve } from 'node:path'
+import { anyaudioHome } from '../audio/home.js'
 
 export const FONT_EXTENSIONS = new Set(['.sf2', '.sf3', '.dls', '.sfogg'])
 
@@ -115,7 +116,7 @@ export function findRecommendedByFile(fileName) {
 export function userFontDir() {
   const override = process.env.ANYAUDIO_FONT_DIR
   if (override && override.trim()) return resolve(override.trim())
-  return join(homedir(), '.dsh', 'anyaudio', 'fonts')
+  return join(anyaudioHome(), 'fonts')
 }
 
 export function fontSearchDirs() {

@@ -17,6 +17,7 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { anyaudioHome } from '../audio/home.js'
 
 export const FREESOUND_SEARCH_URL = 'https://freesound.org/search/'
 export const FREESOUND_SOUND_URL = 'https://freesound.org/s/'
@@ -40,7 +41,7 @@ export class FreesoundError extends Error {
 export function remoteCacheDir() {
   const override = process.env.ANYAUDIO_SFX_REMOTE_DIR
   if (override && override.trim()) return resolve(override.trim())
-  return join(homedir(), '.dsh', 'anyaudio', 'sfx-remote')
+  return join(anyaudioHome(), 'sfx-remote')
 }
 
 function decodeEntities(text) {

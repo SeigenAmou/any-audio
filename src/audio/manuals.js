@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { anyaudioHome } from '../audio/home.js'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -56,7 +57,7 @@ export function fitManualText(text) {
 }
 
 export function manualsDir() {
-  return process.env.ANYAUDIO_MANUALS || join(homedir(), '.dsh', 'anyaudio', 'manuals')
+  return process.env.ANYAUDIO_MANUALS || join(anyaudioHome(), 'manuals')
 }
 
 /**
