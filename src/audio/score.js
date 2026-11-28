@@ -211,9 +211,15 @@ function normalizeVst(spec, trackName) {
   // (LSB). Multi-timbral modules often put the instrument family in the LSB --
   // the EDIROL modules do -- so a part that wants the brass bank sends 0/2.
   const bankLsb = Number.isInteger(raw.bankLsb) ? Math.max(0, Math.min(127, raw.bankLsb)) : undefined
+  // A patch the plugin saved itself (.vstpreset / .fxp) is not a parameter
+  // list: only the plugin knows what is inside. It travels with the part and is
+  // handed to the worker as `state`, so a sound the person dialled in by hand
+  // reaches the render without anyone re-deriving its settings.
+  const state = raw.state && typeof raw.state === 'object' && !Array.isArray(raw.state) ? raw.state : undefined
   return {
     plugin, params,
     ...(controls ? { controls } : {}),
+    ...(state ? { state } : {}),
     ...(channel !== undefined ? { channel } : {}),
     ...(bank !== undefined ? { bank } : {}),
     ...(bankLsb !== undefined ? { bankLsb } : {}),

@@ -2485,5 +2485,25 @@ await test('a note can be counted in bars instead of seconds', async () => {
   assert(bad && /must be seconds or bar:beat/.test(bad.message), 'a time it cannot read says what it accepts')
 })
 
+await test('a patch file travels with the part instead of being dropped', async () => {
+  const out = compileScore({
+    tracks: [{
+      name: 'keys',
+      vst: { plugin: 'C:/x/SRX.dll', state: { path: 'C:/x/night.fxp', format: 'fxp' } },
+      notes: [[0, 1, 'C4']],
+    }],
+  })
+  const part = out.tracks[0]
+  assert(part.vst && part.vst.state, 'the state object survives compilation')
+  assert(part.vst.state.format === 'fxp', 'the format is kept so the worker knows which loader to call')
+  assert(part.vst.state.path === 'C:/x/night.fxp', 'the path is kept unchanged')
+
+  // a state written as junk (a string) is ignored rather than passed downstream
+  const other = compileScore({
+    tracks: [{ name: 'k2', vst: { plugin: 'C:/x/SRX.dll', state: 'nope' }, notes: [[0, 1, 'C4']] }],
+  })
+  assert(other.tracks[0].vst.state === undefined, 'only an object is a state')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
