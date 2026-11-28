@@ -18,7 +18,12 @@
  *    taps. Freeverb does the same job in 1.3s.
  */
 
-export const FX_TYPES = ['eq', 'compressor', 'limiter', 'reverb', 'delay', 'duck', 'pitch']
+export const FX_TYPES = [
+  'eq', 'compressor', 'limiter', 'reverb', 'delay', 'duck', 'pitch',
+  // The bus layer (L3): width is mid/side, loudness is an ITU-R BS.1770
+  // target, multiband is three compressions split by two crossovers.
+  'width', 'loudness', 'multiband',
+]
 
 /**
  * Effects whose sound outlives their input.
@@ -35,8 +40,12 @@ export function needsTail(chain) {
   return (chain ?? []).some((fx) => TAILED_FX.has(fx?.type))
 }
 
-/** A chain longer than this is a mistake, not an arrangement. */
-export const MAX_FX_PER_CHAIN = 8
+/** A chain longer than this is a mistake, not an arrangement.
+ *  Eight was the limit until L3 asked for a real bus: a master chain that
+ *  carries EQ, compression, saturation, width and a limiter already spends
+ *  five slots. Twenty-four leaves room for a complete bus without inviting
+ *  200-effect nonsense. */
+export const MAX_FX_PER_CHAIN = 24
 
 /** Bands in one EQ; six covers everything a voice or a bed needs. */
 export const MAX_EQ_BANDS = 6
@@ -58,6 +67,12 @@ export function defaultFx(type) {
       return { type: 'duck', sourceTrackId: '', targetDb: -9, thresholdDb: -42, attackSec: 0.12, releaseSec: 0.4 }
     case 'pitch':
       return { type: 'pitch', rate: 1, pitchSemitones: 0, preservePitch: false }
+    case 'width':
+      return { type: 'width', width: 1.4 }
+    case 'loudness':
+      return { type: 'loudness', targetLufs: -14 }
+    case 'multiband':
+      return { type: 'multiband', lowHz: 200, highHz: 4000, low: { thresholdDb: -20, ratio: 3 }, mid: { thresholdDb: -18, ratio: 2.5 }, high: { thresholdDb: -24, ratio: 4 } }
     default:
       throw new Error(`unknown effect type "${type}"; use ${FX_TYPES.join(', ')}`)
   }
@@ -148,6 +163,19 @@ export function resolveFx(fx) {
         rate: clamp(num(fx?.rate, 1), 0.25, 4),
         pitchSemitones: clamp(num(fx?.pitchSemitones, 0), -12, 12),
         preservePitch: fx?.preservePitch === true,
+      }
+    case 'width':
+      return { type: 'width', width: clamp(num(fx?.width, 1.4), 0, 2) }
+    case 'loudness':
+      return { type: 'loudness', targetLufs: clamp(num(fx?.targetLufs, -14), -30, 0) }
+    case 'multiband':
+      return {
+        type: 'multiband',
+        lowHz: clamp(num(fx?.lowHz, 200), 60, 800),
+        highHz: clamp(num(fx?.highHz, 4000), 1500, 10000),
+        low: { thresholdDb: clamp(num(fx?.low?.thresholdDb, -20), -60, 0), ratio: clamp(num(fx?.low?.ratio, 3), 1, 20) },
+        mid: { thresholdDb: clamp(num(fx?.mid?.thresholdDb, -18), -60, 0), ratio: clamp(num(fx?.mid?.ratio, 2.5), 1, 20) },
+        high: { thresholdDb: clamp(num(fx?.high?.thresholdDb, -24), -60, 0), ratio: clamp(num(fx?.high?.ratio, 4), 1, 20) },
       }
     default:
       throw new Error(`unknown effect type "${fx?.type}"`)
@@ -607,6 +635,162 @@ export function applyPitch(channels, sampleRate, fx, { preserveLength = false } 
  * the renderer fills by rendering the source track first: the detector wants the
  * source track's signal, not its effects.
  */
+/**
+ * Stereo width through mid/side.
+ *
+ * 0 collapses to mono, 1 is unchanged, 2 doubles the side signal. A mono
+ * buffer has no side signal to widen and comes back untouched: widening it
+ * would only raise the level.
+ */
+function applyWidth(channels, fx) {
+  if (channels.length < 2) return channels
+  const left = channels[0]
+  const right = channels[1]
+  const outL = new Float32Array(left.length)
+  const outR = new Float32Array(right.length)
+  for (let i = 0; i < left.length; i += 1) {
+    const mid = (left[i] + right[i]) * 0.5
+    const side = (left[i] - right[i]) * 0.5 * fx.width
+    outL[i] = mid + side
+    outR[i] = mid - side
+  }
+  channels[0] = outL
+  channels[1] = outR
+  return channels
+}
+
+/** ITU-R BS.1770 K-weighting, the 48 kHz coefficient set. */
+const K_PRE = { b: [1.53512485958697, -2.69169618940638, 1.19839281085285], a: [1, -1.69065929318241, 0.73248077421585] }
+const K_RLB = { b: [1, -2, 1], a: [1, -1.99004745483398, 0.99007225036621] }
+
+function biquad(x, coefficients) {
+  const { b, a } = coefficients
+  const out = new Float32Array(x.length)
+  let x1 = 0
+  let x2 = 0
+  let y1 = 0
+  let y2 = 0
+  for (let i = 0; i < x.length; i += 1) {
+    const y = b[0] * x[i] + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2
+    x2 = x1
+    x1 = x[i]
+    y2 = y1
+    y1 = y
+    out[i] = y
+  }
+  return out
+}
+
+/**
+ * Integrated loudness (LUFS) per ITU-R BS.1770-4: K-weighting, 400 ms blocks
+ * with 75% overlap, a -70 LUFS absolute gate and a -10 LU relative gate.
+ *
+ * The coefficients are the 48 kHz set. On another rate they are close enough
+ * to steer a target; a second coefficient table would be a second thing to
+ * audit and nobody would.
+ */
+export function integratedLoudness(channels, sampleRate = 48000) {
+  if (!channels.length) return -Infinity
+  const weighted = channels.map((channel) => biquad(biquad(channel, K_PRE), K_RLB))
+  const frames = weighted[0].length
+  const block = Math.max(1, Math.round(sampleRate * 0.4))
+  const hop = Math.max(1, Math.round(block / 4))
+  const blocks = []
+  for (let start = 0; start + block <= frames; start += hop) {
+    let sum = 0
+    for (const channel of weighted) {
+      for (let i = start; i < start + block; i += 1) sum += channel[i] * channel[i]
+    }
+    const mean = sum / (block * channels.length)
+    blocks.push(-0.691 + 10 * Math.log10(Math.max(mean, 1e-12)))
+  }
+  if (blocks.length === 0) {
+    let sum = 0
+    for (const channel of weighted) for (let i = 0; i < channel.length; i += 1) sum += channel[i] * channel[i]
+    const mean = sum / (frames * channels.length)
+    return -0.691 + 10 * Math.log10(Math.max(mean, 1e-12))
+  }
+  const absolute = blocks.filter((lufs) => lufs > -70)
+  if (absolute.length === 0) return -Infinity
+  const loudnessOf = (values) => -0.691 + 10 * Math.log10(
+    values.reduce((sum, lufs) => sum + Math.pow(10, (lufs + 0.691) / 10), 0) / values.length,
+  )
+  const relativeGate = loudnessOf(absolute) - 10
+  const gated = absolute.filter((lufs) => lufs > relativeGate)
+  return loudnessOf(gated.length ? gated : absolute)
+}
+
+/**
+ * Scale the whole buffer so its integrated loudness hits the target.
+ *
+ * This is a bus effect, not a per-track one: the target is a property of the
+ * finished mix, and a clip that hits -14 LUFS on its own says nothing about
+ * the mix it lands in.
+ */
+function applyLoudness(channels, sampleRate, fx) {
+  const current = integratedLoudness(channels, sampleRate)
+  if (!Number.isFinite(current)) return channels
+  const gain = Math.pow(10, (fx.targetLufs - current) / 20)
+  return channels.map((channel) => {
+    const out = new Float32Array(channel.length)
+    for (let i = 0; i < channel.length; i += 1) out[i] = channel[i] * gain
+    return out
+  })
+}
+
+/** One first-order lowpass: the crossover a multiband split needs. */
+function onePoleLow(x, cutoffHz, sampleRate) {
+  const alpha = Math.min(1, (2 * Math.PI * cutoffHz) / sampleRate)
+  const out = new Float32Array(x.length)
+  let y = 0
+  for (let i = 0; i < x.length; i += 1) {
+    y += alpha * (x[i] - y)
+    out[i] = y
+  }
+  return out
+}
+
+/**
+ * Three-band compression: split at lowHz and highHz, compress each band with
+ * its own threshold and ratio, sum back. The crossovers are first order, so the
+ * bands overlap by an octave; that is the forgiveness a novice tool wants and
+ * the reason a band cannot be popped out of the mix.
+ */
+function applyMultiband(channels, sampleRate, fx) {
+  const low = channels.map((channel) => onePoleLow(channel, fx.lowHz, sampleRate))
+  const rest = channels.map((channel, index) => {
+    const out = new Float32Array(channel.length)
+    for (let i = 0; i < channel.length; i += 1) out[i] = channel[i] - low[index][i]
+    return out
+  })
+  const mid = rest.map((channel) => onePoleLow(channel, fx.highHz, sampleRate))
+  const high = rest.map((channel, index) => {
+    const out = new Float32Array(channel.length)
+    for (let i = 0; i < channel.length; i += 1) out[i] = channel[i] - mid[index][i]
+    return out
+  })
+  const sum = channels.map((channel) => new Float32Array(channel.length))
+  const parts = [low, mid, high]
+  const settings = [fx.low, fx.mid, fx.high]
+  for (let band = 0; band < parts.length; band += 1) {
+    const compressed = applyCompressor(parts[band], sampleRate, {
+      type: 'compressor',
+      thresholdDb: settings[band].thresholdDb,
+      ratio: settings[band].ratio,
+      attackSec: 0.01,
+      releaseSec: 0.12,
+      kneeDb: 6,
+      makeupDb: 0,
+    })
+    for (let channel = 0; channel < sum.length; channel += 1) {
+      const dst = sum[channel]
+      const src = compressed[channel]
+      for (let i = 0; i < dst.length; i += 1) dst[i] += src[i]
+    }
+  }
+  return sum
+}
+
 export function applyFxChain(channels, sampleRate, chain, context = {}) {
   const resolved = resolveChain(chain)
   if (resolved.length === 0) return channels
@@ -620,6 +804,9 @@ export function applyFxChain(channels, sampleRate, chain, context = {}) {
       case 'delay': out = applyDelay(out, sampleRate, fx); break
       case 'duck': out = applyDuck(out, sampleRate, fx, context.duckEnvelopes?.get(fx.sourceTrackId)); break
       case 'pitch': out = applyPitch(out, sampleRate, fx, { preserveLength: context.preserveLength === true }); break
+      case 'width': out = applyWidth(out, fx); break
+      case 'loudness': out = applyLoudness(out, sampleRate, fx); break
+      case 'multiband': out = applyMultiband(out, sampleRate, fx); break
       default: break
     }
   }

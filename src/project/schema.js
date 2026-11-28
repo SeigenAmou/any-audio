@@ -25,7 +25,7 @@ export const MATERIAL_KINDS = ['music', 'music-stem', 'tts', 'sing', 'sfx', 'amb
  * without effects looks exactly like one written before this field existed.
  */
 export const FX_TYPES = ['eq', 'compressor', 'limiter', 'reverb', 'delay', 'duck', 'pitch']
-export const MAX_FX_PER_CHAIN = 8
+export const MAX_FX_PER_CHAIN = 24
 export const MAX_EQ_BANDS = 6
 
 const EQ_BAND_TYPES = ['peaking', 'lowshelf', 'highshelf']

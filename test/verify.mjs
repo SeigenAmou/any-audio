@@ -8,6 +8,7 @@ import { buildTrackList, noteName, rollText } from '../src/audio/track-view.js'
 import { buildTrackMidi, exportProjectMidi } from '../src/audio/midi-export.js'
 import { selectSources, vst3NoteEvents } from '../src/tools/music.js'
 import { encodeWav, parseWav, peakOf, rmsOf, toDb } from '../src/audio/wav.js'
+import { applyFxChain, integratedLoudness, resolveChain } from '../src/audio/fx.js'
 import { synthesizeSfx } from '../src/audio/sfx.js'
 import { muxVideo } from '../src/audio/mux.js'
 import { drumKeys, planFonts, planOffset, pickProgram } from '../src/audio/banks.js'
@@ -2589,5 +2590,42 @@ await test('a .vstpreset hands over the VST2 chunk it wraps', async () => {
   assert(extractVst2Chunk(Buffer.from('not a preset at all', 'latin1')) === null, 'anything else is left alone')
   assert(extractVst2Chunk(wrap(Buffer.from('FxCk too short', 'latin1'))) === null, 'a chunk without a real header is not a chunk')
 })
+await test('the bus measures loudness against the spec', async () => {
+  // A constant is the wrong probe: the K-weighting starts with a high-pass, so
+  // DC is what it throws away. A 1 kHz tone at 0.3 amplitude sits near -14.2
+  // LUFS (0.3^2/2 is -13.5 dBFS, and the weighting is flat at 1 kHz).
+  const tone = () => {
+    const n = 48000 * 5
+    const x = new Float32Array(n)
+    for (let i = 0; i < n; i += 1) x[i] = 0.3 * Math.sin((2 * Math.PI * 1000 * i) / 48000)
+    return [x]
+  }
+  const measured = integratedLoudness(tone(), 48000)
+  assert(measured > -14.6 && measured < -13, `a 0.3 sine at 1 kHz should sit near -13.5 LUFS, got ${measured.toFixed(2)}`)
+  const quiet = applyFxChain(tone(), 48000, [{ type: 'loudness', targetLufs: -20 }])
+  const after = integratedLoudness(quiet, 48000)
+  assert(Math.abs(after + 20) < 0.2, `target -20 LUFS should land there, got ${after.toFixed(2)}`)
+})
+
+await test('width moves the side signal and can collapse it', async () => {
+  const left = new Float32Array(480).fill(0.3)
+  const right = new Float32Array(480).fill(0.1)
+  const wide = applyFxChain([left.slice(), right.slice()], 48000, [{ type: 'width', width: 2 }])
+  assert(wide[0][10] > 0.35 && wide[1][10] < 0.05, `width 2 should push the sides apart, got ${wide[0][10]}/${wide[1][10]}`)
+  const mono = applyFxChain([left.slice(), right.slice()], 48000, [{ type: 'width', width: 0 }])
+  assert(Math.abs(mono[0][10] - mono[1][10]) < 1e-6, 'width 0 should collapse to mono')
+})
+
+await test('a chain carries twenty-four effects and a multiband split', async () => {
+  const chain = resolveChain(Array.from({ length: 24 }, () => ({ type: 'eq' })))
+  assert(chain.length === 24, `the bus keeps the whole chain, got ${chain.length}`)
+  const mb = applyFxChain(
+    [new Float32Array(480).fill(0.2), new Float32Array(480).fill(0.2)],
+    48000,
+    [{ type: 'multiband', low: { thresholdDb: -40, ratio: 6 } }],
+  )
+  assert(mb.length === 2, 'multiband returns stereo')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

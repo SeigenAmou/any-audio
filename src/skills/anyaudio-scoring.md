@@ -438,6 +438,26 @@ SoundFont 是通用音色库，胜在什么都有、随处能跑；但有些声�
 
 **旁白压低音乐**：在音乐轨上加一个 `duck` 效果，`sourceTrackId` 指向旁白轨。工程渲染和剪辑台预览都会按它压低。
 
+**总线（masterFx）**：所有轨道加完之后还有一道总线，`anyaudio_project mode:"update"` 的
+`{target:"project", field:"masterFx", value:[…]}` 就是它。总线上的效果只作用一次、作用于整条混音，
+所以这里放**属于整首歌**的东西：平衡、响度、宽度、最后一道限制器。片段上的 `fx` 才是每段自己的。
+
+三种只在总线上讲得通的效果：
+
+- `width`：立体声宽度，`0` 收成单声道、`1` 不变、`2` 把侧信号翻倍。单声道缓冲区原样返回——没有侧信号可拉。
+- `loudness`：按 **ITU-R BS.1770-4** 量整段响度（K 加权、400 ms 块、两道门限）再整体缩放。
+  `{type:"loudness", targetLufs:-14}` 是发布口径；短视频平台往 -14，播客 -16，影院 -23。
+  它是**测量后缩放**，不是压缩——前面该压的压完，它才准。
+- `multiband`：两处分频（`lowHz` 200、`highHz` 4000）切成低/中/高三段各自压。
+  低频压得动，中频不跟着一起闷。`{type:"multiband", low:{thresholdDb:-20, ratio:3}, mid:{…}, high:{…}}`。
+
+顺序通常是 `eq → compressor → multiband → width → loudness → limiter`：先修音色，再控动态，
+再分频压，再拉宽度，再定响度，最后限峰。**响度放在限制器前面**，否则限制器削掉的峰值会让测出来的响度偏小。
+一条链最多 24 个效果（以前是 8 个，一条真正的总线光 EQ、压缩、饱和、宽度、限制器就占五格）。
+
+验收：`anyaudio_project mode:"render"` 前后对比 `peakDb` 与 `integratedLoudness` 的读数；
+宽度靠单声道回放在耳机里听侧信号——`width:0` 时左右应该完全一样。
+
 ```json
 {
   "tracks": [
