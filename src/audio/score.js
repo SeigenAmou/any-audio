@@ -619,6 +619,12 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
   if (!score || typeof score !== 'object') throw new ScoreError('score must be a JSON object')
   if (!Array.isArray(score.tracks) || score.tracks.length === 0) throw new ScoreError('score.tracks must be a non-empty array')
   if (score.tracks.length > 16) throw new ScoreError('a score can use at most 16 tracks (one MIDI channel each)')
+  // Concert pitch. The renderer resamples the finished mix by 440/tuningHz,
+  // so 432 Hz sits 31.8 cents low without any instrument knowing about it.
+  const tuningHz = Number(score.tuningHz ?? 440)
+  if (!Number.isFinite(tuningHz) || tuningHz < 380 || tuningHz > 500) {
+    throw new ScoreError('score.tuningHz must be a concert pitch between 380 and 500 Hz (default 440)')
+  }
   const warnings = []
   const warn = (message) => {
     if (!warnings.includes(message)) warnings.push(message)
@@ -861,6 +867,7 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     },
     ...(expressionReports.length ? { expression: expressionReports } : {}),
     ...(tempo.length ? { tempo } : {}),
+    ...(tuningHz !== 440 ? { tuningHz } : {}),
     warnings,
   }
 }

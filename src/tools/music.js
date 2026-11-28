@@ -734,7 +734,15 @@ ${value.warnings.map((warning) => `- ${warning}`).join('\n')}`)
           onHwCapture: (name, path) => hwCaptures.set(name, path),
         })
         : await renderScore(compiled, { banks: plan.banks, layout: plan.layout, sampleRate, durationSec, peakDb, normalize })
-    const written = await writeWavFile(target, rendered.channels, sampleRate)
+    // Concert pitch moves the whole mix, not each instrument: resampling the
+    // finished buffer keeps a 432 Hz render internally coherent (the same take
+    // at a lower pitch), where re-rendering every part would also move timbre.
+    let channels = rendered.channels
+    const tuningHz = Number(compiled.tuningHz ?? 440)
+    if (Number.isFinite(tuningHz) && Math.abs(tuningHz - 440) > 0.01) {
+      channels = resample(channels, sampleRate, sampleRate * (440 / tuningHz))
+    }
+    const written = await writeWavFile(target, channels, sampleRate)
     // Replace or append, decided before anything is written.
     //
     // Re-rendering a score to fix its balance is the ordinary case, and it used
