@@ -15,7 +15,7 @@ import { nearestDrumKey, remapDrumTrack } from '../src/audio/drum-map.js'
 import { firstPeakOffset, peakPolyphony, shiftChannels } from '../src/audio/hw-track.js'
 import { addPending, listManuals, listPending, manualSlug, pendingFor, readManual, removeManual, removePending, saveManual } from '../src/audio/manuals.js'
 import { peInfo, scanVstLibrary, vst2Kind } from '../src/audio/vst-host.js'
-import { encodeFxp } from '../src/audio/vst-preset.js'
+import { encodeFxp, extractVst2Chunk } from '../src/audio/vst-preset.js'
 import { mergeOrchestrationSheets, parseOrchestrationCsv, summarizeOrchestration } from '../src/audio/orchestration.js'
 import { categoryOfProgram, fontScore, rankFonts } from '../src/audio/scoring.js'
 import { registerAllTools } from '../src/tools/index.js'
@@ -835,8 +835,10 @@ await test('bank offsets skip collisions and never overflow bank 127', async () 
   const bankB = { presets: [{ bankMSB: 0, program: 0 }] }
   assert(planOffset(new Set(['0:0', '0:24']), bankB) === 1, 'offset 0 collides, so offset 1 is the smallest safe one')
   assert(planOffset(new Set(), bankB) === 0, 'an empty bank space starts at 0')
-  const topBank = { presets: [{ bankMSB: 127, program: 0 }] }
-  assert(planOffset(new Set(['127:0']), topBank) === null, 'no offset can keep a bank-127 preset out of collision/overflow')
+  const topBank = { presets: [{ bankMSB: 126, program: 0 }] }
+  assert(planOffset(new Set(['126:0', '127:0']), topBank) === null, 'no offset can keep a bank-126 preset out of collision/overflow')
+  const kit = { presets: [{ bankMSB: 127, program: 0 }] }
+  assert(planOffset(new Set(['127:0']), kit) === 0, 'a bank-127 kit is a drum map and does not constrain where the font is placed')
 })
 
 await test('a single-instrument bank plays its own program; ambiguous banks refuse', async () => {
@@ -866,12 +868,14 @@ await test('score tracks carry a source, and a missing or unknown one fails clea
   const unknown = await render({ name: 'g', instrument: 'guitar', source: 'no-such-font', notes: [[0, 0.5, 'E3', 80]] })
   assert(/not installed|unknown sound source/.test(unknown), `expected an actionable source error, got "${unknown}"`)
 
-  // A score written before source was required still plays: it falls back to the
-  // first installed font, and the warning names it so the caller can fix the score.
+  // A score written before source was required still plays: the track keeps no
+  // source and planFonts gives it the default font. Writing a concrete id here
+  // would load a second bank on top of the default — with a drum-kit default
+  // there is no room for it.
   const loose = compileScore({ tracks: [{ name: 'g', instrument: 'guitar', notes: [[0, 0.5, 'E3', 80]] }] })
   const selected = await selectSources(loose, {})
   assert(selected.warnings.some((warning) => /no source named/.test(warning)), `a missing source should warn, got ${JSON.stringify(selected.warnings)}`)
-  assert(loose.tracks[0].source === 'generaluser', 'a missing source falls back to the first installed font')
+  assert(loose.tracks[0].source === undefined, 'a missing source stays unset so planFonts plays it on the default font')
 })
 
 await test('per-track source is reported for every track', async () => {
@@ -2547,5 +2551,43 @@ await test('a recorded file is a track of its own', async () => {
   assert(missing && /audio needs a "path"/.test(missing.message), 'the file is required')
 })
 
+await test('instrument "drums" is a drum part, not a silent melodic track', async () => {
+  const compiled = compileScore({
+    tracks: [{ name: 'kit', instrument: 'drums', notes: [[0, 0.2, 'kick'], [0.5, 0.2, 'snare']] }],
+  })
+  const track = compiled.tracks[0]
+  assert(track.drums === true, 'a track that names drums is a drum part')
+  assert(track.channel === 9, `the drum part takes channel 9, got ${track.channel}`)
+  assert(track.notes.map((note) => note.midi).join(',') === '36,38', `drum names resolve to keys, got ${track.notes.map((note) => note.midi).join(',')}`)
+})
+
+await test('a .vstpreset hands over the VST2 chunk it wraps', async () => {
+  const body = (kind, programs) => {
+    const out = Buffer.alloc(48)
+    out.write(kind, 0, 'latin1')
+    out.writeInt32BE(kind === 'FBCh' ? 2 : 1, 4)
+    out.writeInt32BE(0x4c4d3432, 8)
+    out.writeInt32BE(1, 12)
+    out.writeInt32BE(programs, 16)
+    return out
+  }
+  const head = (chunk) => Buffer.concat([Buffer.from('CcnK', 'latin1'), (() => { const size = Buffer.alloc(4); size.writeInt32BE(chunk.length, 0); return size })(), chunk])
+  const wrap = (chunk) => Buffer.concat([Buffer.from('VST3', 'latin1'), Buffer.alloc(56), chunk])
+
+  const program = body('FxCk', 0)
+  program.write('LM4 Test Kit', 20, 'latin1')
+  const one = extractVst2Chunk(wrap(head(program)))
+  assert(one && one.kind === 'FxCk', 'a program chunk is recognised')
+  assert(one.fxId === 0x4c4d3432, `the plugin id survives, got ${one.fxId}`)
+  assert(one.name === 'LM4 Test Kit', `the program name survives, got "${one.name}"`)
+  assert(one.chunk.length === program.length + 8, 'the chunk is handed over whole')
+
+  const many = extractVst2Chunk(wrap(head(body('FBCh', 20))))
+  assert(many && many.kind === 'FBCh', 'a bank chunk is recognised')
+  assert(many.programs === 20, `the program count survives, got ${many.programs}`)
+
+  assert(extractVst2Chunk(Buffer.from('not a preset at all', 'latin1')) === null, 'anything else is left alone')
+  assert(extractVst2Chunk(wrap(Buffer.from('FxCk too short', 'latin1'))) === null, 'a chunk without a real header is not a chunk')
+})
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

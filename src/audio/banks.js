@@ -15,11 +15,19 @@ import { loadSoundBank } from './synth.js'
 import { remapDrumTrack } from './drum-map.js'
 
 export function melodicPresets(bank) {
-  return (bank.presets ?? []).filter((preset) => preset.isGMGSDrum !== true && (preset.bankMSB ?? 0) !== 120)
+  // Bank 127 is the GM drum bank in the 0-based numbering SoundFonts use,
+  // the same way bank 120 is in the General MIDI numbering. Both are kits,
+  // not melodies, and must not constrain where a font can be placed.
+  return (bank.presets ?? []).filter((preset) => preset.isGMGSDrum !== true && (preset.bankMSB ?? 0) !== 120 && (preset.bankMSB ?? 0) !== 127)
 }
 
 export function hasDrumKit(bank) {
-  return (bank.presets ?? []).some((preset) => preset.isGMGSDrum === true || (preset.bankMSB ?? 0) === 120)
+  return (bank.presets ?? []).some((preset) => {
+    if (preset.isGMGSDrum === true || (preset.bankMSB ?? 0) === 120) return true
+    // A kit can live in an ordinary bank too: one preset whose zones point at
+    // many instruments is a drum map, not a melodic patch (LM4_Kits does this).
+    return (preset.zones ?? []).some((zone) => (zone?._instrument?.zones?.length ?? 0) > 1)
+  })
 }
 
 /**
@@ -85,6 +93,29 @@ export function pickProgram(bank, wantedProgram) {
   if (programs.size === 1) return melodic[0].program
   return null
 }
+
+/**
+ * How many distinct keys this font's melodic presets actually answer. A kit
+ * published as GM programs reports presets on bank 0 but maps only the kit's
+ * own keys, so this is what tells a drum-kit bank from a melodic one.
+ */
+export function melodicKeyCoverage(bank) {
+  const keys = new Set()
+  for (const preset of melodicPresets(bank)) {
+    for (const zone of preset.zones ?? []) {
+      const inner = zone?._instrument?.zones
+      for (const child of inner && inner.length ? inner : [zone]) {
+        const range = child?.keyRange
+        if (!range) continue
+        const low = Math.max(0, Number.isFinite(range.min) ? range.min : 0)
+        const high = Math.min(127, Number.isFinite(range.max) ? range.max : 127)
+        for (let key = low; key <= high; key++) keys.add(key)
+      }
+    }
+  }
+  return keys.size
+}
+
 
 function sanitizeId(value) {
   return String(value)
@@ -257,6 +288,11 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
 
   const layout = new Map()
   const autoPicks = []
+  let defaultKeys = null
+  const defaultCoverage = () => {
+    if (defaultKeys === null) defaultKeys = melodicKeyCoverage(defaultBank.bank)
+    return defaultKeys
+  }
   for (const track of compiled.tracks) {
     const requested = track.source === undefined || track.source === null || track.source === '' ? null : String(track.source)
     if (track.drums) {
@@ -291,6 +327,17 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
       autoPicks.push(track)
       continue
     }
+    if (!requested) {
+      const defaultProgram = pickProgram(defaultBank.bank, track.program)
+      // A default font can be a drum-kit bank: it answers keys, not GM programs.
+      // Saying so and letting the picker find a font that can play the part is
+      // better than a track that renders to silence.
+      if (defaultProgram === null || defaultCoverage() < 48) {
+        autoPicks.push(track)
+        warnings.push(`track "${track.name}": the default font "${defaultEntry.name}" cannot play ${track.instrument} — picked one that can`)
+        continue
+      }
+    }
     const entry = requested ? await resolveSource(requested, catalog, workspaceRoot) : defaultEntry
     const record = await addBank(entry)
     const program = pickProgram(record.bank, track.program)
@@ -317,14 +364,28 @@ export async function planFonts(compiled, { workspaceRoot, fontPath } = {}) {
       let chosen = null
       for (const candidate of ranked) {
         if (candidate.id === defaultEntry.id) {
-          chosen = { entry: defaultEntry, record: defaultBank, program: track.program, score: candidate.score, category }
-          break
+          // Usually ranked first, but a drum bank answers a program number
+          // without covering the keyboard: judge it like any other candidate.
+          if (pickProgram(defaultBank.bank, track.program) !== null && defaultCoverage() >= 120) {
+            chosen = { entry: defaultEntry, record: defaultBank, program: track.program, score: candidate.score, category }
+            break
+          }
+          continue
         }
         const entry = candidates.find((item) => (item.recommended?.id ?? item.id) === candidate.id)
         if (!entry) continue
-        const record = await addBank(entry)
+        let record
+        try {
+          record = await addBank(entry)
+        } catch {
+          // A font that cannot be loaded without overwriting what is already
+          // there is not a candidate: skip it and let the next ranked font try.
+          continue
+        }
         const program = pickProgram(record.bank, track.program)
-        if (program !== null) {
+        // A loop or kit library answers a program number without covering the
+        // keyboard, so the part would render silent: require real melodic keys.
+        if (program !== null && melodicKeyCoverage(record.bank) >= 120) {
           chosen = { entry, record, program, score: candidate.score, category }
           break
         }

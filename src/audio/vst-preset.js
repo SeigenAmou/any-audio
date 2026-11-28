@@ -177,6 +177,28 @@ export async function savePreset({ name, plugin, params, state, note }) {
 }
 
 /**
+ * A `.vstpreset` a Cubase-style host writes for a VST2 plugin is a VST3
+ * wrapper around the plugin's own `FxCk` or `FBCh` chunk. The wrapper means
+ * nothing to a VST2 state loader, so pull the inner chunk out; the plugin then
+ * sees exactly the file it would have saved itself.
+ */
+export function extractVst2Chunk(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 16) return null
+  if (buffer.toString('latin1', 0, 4) !== 'VST3') return null
+  const index = buffer.indexOf('CcnK', 4)
+  if (index < 0 || index + 8 > buffer.length) return null
+  const bodyLength = buffer.readInt32BE(index + 4)
+  if (bodyLength <= 0 || index + 8 + bodyLength > buffer.length) return null
+  const body = buffer.subarray(index + 8, index + 8 + bodyLength)
+  const kind = body.toString('latin1', 0, 4)
+  if (kind !== 'FxCk' && kind !== 'FBCh') return null
+  const fxId = body.readInt32BE(8)
+  const name = kind === 'FxCk' ? body.toString('latin1', 20, 48).replace(/\0[\s\S]*$/, '').trim() : ''
+  const programs = kind === 'FBCh' ? body.readInt32BE(16) : 1
+  return { kind, fxId, name, programs, chunk: Buffer.concat([buffer.subarray(index, index + 8), body]) }
+}
+
+/**
  * Register a preset file the plugin itself wrote. Nothing is parsed: the file
  * belongs to the plugin, and handing it back unchanged is the whole point.
  */
@@ -191,8 +213,22 @@ export async function importPreset({ name, plugin, file, note }) {
   }
   if (!info.isFile()) throw new Error(`${source} is not a file`)
   if (info.size === 0) throw new Error(`${source} is empty`)
-  const state = cleanState({ path: source })
   const label = String(name ?? '').trim() || basename(source, extname(source))
+  // A Cubase-style host saves the VST2 plugin's own chunk inside its
+  // `.vstpreset` wrapper; a VST2 host cannot read the wrapper, so the chunk is
+  // written out as the `.fxp`/`.fxb` the plugin itself would have saved. A
+  // file without an inner chunk is handed over untouched — a VST3 file is its
+  // own format, and only the plugin can judge it.
+  let state = cleanState({ path: source })
+  note = String(note ?? '').trim() || `imported from ${basename(source)}`
+  const inner = extractVst2Chunk(await readFile(source))
+  if (inner) {
+    const target = join(presetDir(), `${presetSlug(label)}.${inner.kind === 'FBCh' ? 'fxb' : 'fxp'}`)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, inner.chunk)
+    state = cleanState({ path: target })
+    note = `imported from ${basename(source)} — the VST2 ${inner.kind === 'FBCh' ? 'bank' : 'program'} chunk it wraps${inner.name ? ` ("${inner.name}")` : ''}, ${inner.programs} program(s)`
+  }
   return savePreset({
     name: label,
     // A preset file may be shared by several plugins, and a score track that
@@ -201,7 +237,7 @@ export async function importPreset({ name, plugin, file, note }) {
     plugin: String(plugin ?? '').trim() || 'unknown',
     params: {},
     state,
-    note: note ?? `imported from ${basename(source)}`,
+    note,
   })
 }
 

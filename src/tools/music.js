@@ -289,9 +289,11 @@ export async function selectSources(compiled, { catalog = null, fonts = null, wo
         problems.push(`track "${track.name}" names no source and no SoundFont is installed`)
         continue
       }
-      source = fallback.id
-      track.source = fallback.id
-      warnings.push(`track "${track.name}": no source named — rendered with "${fallback.id}"`)
+      // planFonts gives a track with no source the default font, so nothing is
+      // written here: naming a concrete id would load a second bank on top of
+      // the default, and a drum-kit default leaves no offset for another bank.
+      warnings.push(`track "${track.name}": no source named — will use the default font, or a font that can play it`)
+      continue
     }
     const explicit = vst3ById.get(source)
     if (explicit) {

@@ -651,6 +651,9 @@ export function compileScore(score, { sampleRate = 48000, externals = [] } = {})
     const track = raw ?? {}
     const name = String(track.name ?? `track-${index + 1}`)
     const drums = track.drums === true || track.kit === true
+      // `instrument: "drums"` is the obvious way to write a drum part; treat it as
+      // the explicit flag instead of a melodic track that renders to nothing.
+      || /^(drums?|drum ?kit|percussion)$/i.test(String(track.instrument ?? '').trim())
     // A plugin is its own instrument in its own process: it does not claim one
     // of the 16 SoundFont channels, and its bank/program events are meaningless.
     const vst = normalizeVst(track.vst, name)

@@ -1285,6 +1285,16 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
         return json(res, 500, { ok: false, error: describeError(error) })
       }
     }
+    // Read endpoints belong before the POST-only guard: a GET that falls past it
+    // answers "method not allowed" and the page shows that as a stray error.
+      if (method === 'GET' && path === `${PREFIX}/orchestrations`) {
+        return json(res, 200, { ok: true, tables: listOrchestrations() })
+      }
+      if (method === 'GET' && path === `${PREFIX}/orchestrations/read`) {
+        const table = readOrchestration(url.searchParams.get('name') ?? '')
+        if (!table) return json(res, 404, { ok: false, error: 'no orchestration table with that name' })
+        return json(res, 200, { ok: true, table })
+      }
     if (method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' })
 
     let body
@@ -1300,14 +1310,6 @@ function makeRoutes({ ctx, log, workspaceRoot }) {
         } catch (error) {
           return json(res, 400, { ok: false, error: describeError(error) })
         }
-      }
-      if (method === 'GET' && path === `${PREFIX}/orchestrations`) {
-        return json(res, 200, { ok: true, tables: listOrchestrations() })
-      }
-      if (method === 'GET' && path === `${PREFIX}/orchestrations/read`) {
-        const table = readOrchestration(url.searchParams.get('name') ?? '')
-        if (!table) return json(res, 404, { ok: false, error: 'no orchestration table with that name' })
-        return json(res, 200, { ok: true, table })
       }
       if (path === `${PREFIX}/orchestrations/import`) {
         try {
