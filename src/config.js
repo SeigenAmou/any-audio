@@ -16,6 +16,11 @@ export const DEFAULTS = {
   ui: {
     language: 'auto',
     onboardedVersion: 0,
+    // What the person sees, not what the agent may do: the agent always has the
+    // full tool set. These two gates only decide whether the bus, the second
+    // mixing stage and the render knobs are visible in the interface.
+    proMode: false,
+    fullControl: false,
   },
   tts: {
     provider: 'edge',
@@ -247,6 +252,9 @@ export function normalizeConfig(input) {
   // The first-run guide is versioned, not boolean: a later release can raise the
   // number and show only the new steps to someone who already finished v1.
   const onboardedVersion = Math.round(clampNumber(uiRaw.onboardedVersion, 0, 999, DEFAULTS.ui.onboardedVersion))
+  // Only a real `true` opens a gate; a typo must not unlock a panel by accident.
+  const proMode = uiRaw.proMode === true
+  const fullControl = uiRaw.fullControl === true
 
   const ttsRaw = isPlainObject(raw.tts) ? raw.tts : {}
   const provider = PROVIDERS.includes(ttsRaw.provider) ? ttsRaw.provider : DEFAULTS.tts.provider
@@ -350,6 +358,8 @@ export function normalizeConfig(input) {
       ui: {
         language,
         onboardedVersion,
+        proMode,
+        fullControl,
       },
       tts: {
         provider,

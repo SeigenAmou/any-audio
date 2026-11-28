@@ -1884,7 +1884,19 @@ await test('a score can hand one part to a plugin without stealing a SoundFont c
 
 await test('anyaudio_record lists inputs and captures whatever the cable carries', async () => {
   const record = tools.get('anyaudio_record')
-  const offered = await record.execute({ action: 'devices' }, exec)
+  // The capture half needs sounddevice, which a CI runner may not have. A missing
+  // optional dependency is an environment fact, not a broken tool: say so and let
+  // the rest of the suite run, the way the MIDI bridge case already does.
+  let offered
+  try {
+    offered = await record.execute({ action: 'devices' }, exec)
+  } catch (error) {
+    if (/not importable|No module named|install it with/i.test(error.message)) {
+      console.log(`     (record bridge unavailable: ${error.message} — skipped)`)
+      return
+    }
+    throw error
+  }
   assertMatchesOutputSchema(record, offered)
   assert(Array.isArray(offered.inputs), 'devices returns an input array')
   assert(typeof offered.count === 'number', 'devices counts the inputs')
