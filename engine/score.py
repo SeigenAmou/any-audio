@@ -232,12 +232,17 @@ class ScoreConverter:
         notes = []
         for syl in syllables:
             for k, (midi, dur) in enumerate(syl["notes"]):
+                # One syllable stretched over several notes is sung again on each
+                # note instead of being held as a slur: DiffSinger drops roughly
+                # 17 dB on a single-phoneme slur across three notes (measured
+                # 2026-11-28: -48.9 dBFS held vs -21.9 dBFS re-sung). Repeating
+                # the syllable keeps the level and the pitch contour readable.
                 notes.append({
-                    "phones": syl["word"] if k == 0 else [],
+                    "phones": list(syl["word"]),
                     "midi": midi,
                     "dur": dur,
                     "rest": midi is None,
-                    "slur": 0 if k == 0 else 1,
+                    "slur": 0,
                 })
 
         # 超长按音符边界截断，并去掉结尾休止
@@ -286,12 +291,15 @@ def split_phrases(score):
     """
     phrases, current = [], []
     for raw in score:
-        midi = raw[2] if isinstance(raw, (list, tuple)) and len(raw) >= 3 else None
-        if midi is None:
-            if current:
+        if current:
+            prev = current[-1]
+            prev_end = float(prev[0]) + float(prev[1])
+            # Only a silent hole in the timeline starts a new phrase. A rest note
+            # is a note of its own: dropping it squeezed a 2 s silence to the
+            # 0.15 s breath between phrases (test-sing 2026-11-28).
+            if float(raw[0]) - prev_end > 0.1:
                 phrases.append(current)
                 current = []
-            continue
         current.append(raw)
     if current:
         phrases.append(current)

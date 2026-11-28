@@ -38,6 +38,10 @@ export function listPresets(bank, { query, limit = 200 } = {}) {
     program: preset.program,
     bank: preset.bankMSB ?? 0,
     drums: preset.isGMGSDrum === true || (preset.bankMSB ?? 0) === 120,
+    // One preset whose zones point at many instruments is a drum map in an
+    // ordinary bank (LM4_Kits: bank 0, programs 0-9). The zone list itself is
+    // not carried: callers only need the answer, not the key map.
+    kit: (preset.zones ?? []).some((zone) => (zone?._instrument?.zones?.length ?? 0) > 1),
   }))
 }
 

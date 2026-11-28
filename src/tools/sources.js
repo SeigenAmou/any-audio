@@ -56,6 +56,9 @@ async function legacyProjectFonts(workspaceRoot) {
 /** The exact score field for one SF2 preset: bank 0 uses the alias/program, other banks need the object form. */
 function writeForPreset(preset) {
   if (preset.drums) return 'drums:true（鼓组，音高按鼓件名）'
+  // A kit can sit in an ordinary bank (LM4_Kits: bank 0, programs 0-9). Naming
+  // it instrument:"piano" would ask for GM Grand Piano, not that kit.
+  if (isKitPreset(preset)) return `program:${preset.program}`
   if (preset.bank === 0) {
     const alias = PROGRAM_ALIASES.get(preset.program)
     return alias ? `instrument:"${alias}"` : `instrument:${preset.program}`
@@ -89,6 +92,14 @@ for (const [name, program] of Object.entries(INSTRUMENTS)) {
  * timbres: null——一个坏库不该让整份清单失败。vendor 取库元数据里的作者，SF2 没有
  * 厂商字段，这是最接近的一项。
  */
+/** One preset whose zones point at many instruments is a drum map, not a
+ *  melodic patch: naming it instrument:piano would hit GM Grand Piano and play
+ *  the wrong kit. Report those by program number instead. */
+function isKitPreset(preset) {
+  if (preset && preset.kit === true) return true
+  return (preset.zones ?? []).some((zone) => (zone?._instrument?.zones?.length ?? 0) > 1)
+}
+
 async function sf2Info(path) {
   let bank
   try {
@@ -99,13 +110,14 @@ async function sf2Info(path) {
   const byProgram = new Map()
   for (const preset of listPresets(bank, { limit: 10000 })) {
     if (preset.drums || preset.bank !== 0 || byProgram.has(preset.program)) continue
-    byProgram.set(preset.program, preset.name)
+    byProgram.set(preset.program, { name: preset.name, kit: isKitPreset(preset) })
   }
   const timbres = [...byProgram.entries()]
     .sort(([left], [right]) => left - right)
-    .map(([program, name]) => {
+    .map(([program, entry]) => {
+      if (entry.kit) return { name: entry.name, program, write: `program:${program}` }
       const alias = PROGRAM_ALIASES.get(program)
-      return { name, program, write: alias ? `instrument:"${alias}"` : `instrument:${program}` }
+      return { name: entry.name, program, write: alias ? `instrument:"${alias}"` : `instrument:${program}` }
     })
   const engineer = bank.soundBankInfo?.engineer
   return { timbres, vendor: typeof engineer === 'string' ? engineer.trim() : '' }

@@ -60,9 +60,13 @@ export function splitNotes(notes) {
   const phrases = []
   let current = []
   for (const note of sorted) {
-    if (note[2] === null) {
-      if (current.length) { phrases.push(current); current = [] }
-      continue
+    // A rest is a note of its own (midi null): keep it inside the phrase so the
+    // gap is audible. Only a real gap in time starts a new phrase — dropping
+    // rests made a 2 s silence come out as 1.17 s (test-sing 2026-11-28).
+    if (current.length) {
+      const prev = current[current.length - 1]
+      const gap = note[0] - (prev[0] + prev[1])
+      if (gap > 0.01) { phrases.push(current); current = [] }
     }
     current.push(note)
   }
