@@ -576,6 +576,10 @@ function renderText(args, value) {
       }
       if (value.action === 'inspect') {
         const lines = value.sounds.map((sound) => {
+          if (sound.kind === 'preset') {
+            const length = sound.shape === 'sustained' ? 'sustained' : `one-shot ${sound.lengthSec.toFixed(2)}s`
+            return `${sound.name}（${sound.zh}） | 声音预设（${sound.group}） | ${length} | 峰值 ${sound.peakDb.toFixed(1)} dBFS | ${sound.font}`
+          }
           const peak = sound.peakPosSec === undefined ? '' : ` | 主峰 ${sound.peakPosSec.toFixed(3)}s`
           return `${sound.name} | ${LIBRARY_TYPE_LABEL[sound.type] ?? sound.type} | ${sound.durationSec.toFixed(2)}s${peak}`
         })
@@ -593,6 +597,13 @@ function renderText(args, value) {
             return `${entry.name}${mark} | ${LIBRARY_TYPE_LABEL[entry.type] ?? entry.type} | ${entry.durationSec.toFixed(2)}s | ${entry.packId}`
           }))
           if (value.truncated) lines.push(`共 ${value.total} 条，显示前 ${value.shown} 条；换更具体的词可以缩小范围`)
+        }
+        if ((value.presets ?? []).length > 0) {
+          lines.push('', 'SoundFont 内置采样（用 {preset:"名字"} 放置）：')
+          lines.push(...value.presets.map((entry) => {
+            const length = entry.shape === 'sustained' ? 'sustained' : `one-shot ${entry.lengthSec.toFixed(2)}s`
+            return `${entry.id}（${entry.zh}） | ${entry.group} | ${length} | ${entry.font}`
+          }))
         }
         if (value.remote) {
           lines.push('', `线上 CC0（Freesound，共 ${value.remote.total} 条）—— 取用时把 previewUrl 一起传回：`)
@@ -711,6 +722,10 @@ export const sfxToolDefinition = finalizeTool({
       if (value.action === 'inspect') {
         const blocks = []
         const lines = value.sounds.map((sound) => {
+          if (sound.kind === 'preset') {
+            const length = sound.shape === 'sustained' ? 'sustained' : `one-shot ${sound.lengthSec.toFixed(2)}s`
+            return `${sound.name}（${sound.zh}） | 声音预设（${sound.group}） | ${length} | 峰值 ${sound.peakDb.toFixed(1)} dBFS | ${sound.font}`
+          }
           const peak = sound.peakPosSec === undefined ? '' : ` | 主峰 ${sound.peakPosSec.toFixed(3)}s`
           return `${sound.name} | ${LIBRARY_TYPE_LABEL[sound.type] ?? sound.type} | ${sound.durationSec.toFixed(2)}s${peak}`
         })
@@ -757,9 +772,22 @@ export const sfxToolDefinition = finalizeTool({
     if (action === 'inspect') {
       const names = Array.isArray(args.names) ? args.names : await readJsonParam(args.names, 'names', { workspaceRoot })
       if (!Array.isArray(names) || names.length === 0) throw new Error('action:"inspect" needs names: an array of sound names (or a path to a .json file holding one)')
+      // The catalog lists the SoundFont presets beside the installed library, so
+      // a name can belong to either; inspect answers for both instead of
+      // reporting "no sound named" for a name the catalog itself printed.
+      const fallbackFonts = [...paths.keys()]
+      const fromPresets = []
+      const fromLibrary = []
+      for (const name of names) {
+        const preset = resolveSfxPreset(name, { fonts: fallbackFonts })
+        if (preset) fromPresets.push({ kind: 'preset', ...preset })
+        else fromLibrary.push(name)
+      }
       const withImages = await modelSeesImages(exec)
-      const inspected = await inspectSounds(names, { exec, withImages })
-      return { ok: true, action: 'inspect', sounds: inspected.sounds, warnings: inspected.warnings }
+      const inspected = fromLibrary.length > 0
+        ? await inspectSounds(fromLibrary, { exec, withImages })
+        : { sounds: [], warnings: [] }
+      return { ok: true, action: 'inspect', sounds: [...fromPresets, ...inspected.sounds], warnings: inspected.warnings }
     }
 
     if (action === 'search') {
@@ -770,12 +798,15 @@ export const sfxToolDefinition = finalizeTool({
         limit: args.limit,
         packsConfig: config.sfx?.packs,
       })
+      // The SoundFont presets are the other half of the catalog: looking only at
+      // installed packs answered "no sound named" for names the catalog prints.
+      const presets = listSfxPresets({ fonts: [...paths.keys()], query: args.query }).slice(0, Math.max(1, args.limit ?? 5))
       // The online source is the second of three, so it is only consulted when
       // the local library has nothing. A search that already found the sound
       // does not need a network round-trip, and a search that cannot reach the
       // network still answers with what the local packs hold.
       let remote = null
-      if (found.total === 0 && args.remote !== false) {
+      if (found.total === 0 && presets.length === 0 && args.remote !== false) {
         const online = await searchFreesound(args.query, { limit: args.limit ?? 10 })
         if (online.results.length > 0) {
           remote = {
@@ -795,7 +826,7 @@ export const sfxToolDefinition = finalizeTool({
       }
       // `remote` is omitted rather than set to null: the output schema declares it
       // as an object, and a null there fails the whole tool result.
-      return { ok: true, action: 'search', ...found, packCount: packs.length, ...(remote ? { remote } : {}), warnings }
+      return { ok: true, action: 'search', ...found, packCount: packs.length, ...(presets.length > 0 ? { presets } : {}), ...(remote ? { remote } : {}), warnings }
     }
 
     const items = Array.isArray(args.items) ? args.items : await readJsonParam(args.items, 'items', { workspaceRoot })
